@@ -383,7 +383,7 @@ def process_data(cfg, binding_energy_chains):
                 elif len(header_parts) == 3:
                     mut_chains = header_parts[1]
                     ddG_expt = is_float(header_parts[2])
-                if not ddG_expt: ddG_expt = np.NaN
+                if not ddG_expt: ddG_expt = np.nan
 
                 # Create full mutant sequence
                 mut_seq = []
@@ -413,7 +413,7 @@ def process_data(cfg, binding_energy_chains):
         mutant_df = pd.read_csv(cfg.mutant_csv)
         assert all(col in mutant_df.columns for col in ['pdb', 'chain', 'mut_type']), "CSV must contain 'pdb', 'chain', and 'mut_type' columns"
         if not 'ddG_expt' in mutant_df.columns:
-            mutant_df['ddG_expt'] = [np.NaN] * len(mutant_df)
+            mutant_df['ddG_expt'] = [np.nan] * len(mutant_df)
         for pdb in mutant_df['pdb'].unique():
             pdb_df = mutant_df[mutant_df['pdb'] == pdb]
             wt_info = parse_PDB_seq_only(os.path.join(cfg.input_dir, pdb + '.pdb'), skip_gaps=cfg.inference.skip_gaps)
@@ -455,7 +455,7 @@ def process_data(cfg, binding_energy_chains):
                                 full_mut_seq = copy.deepcopy(wt_chains)
                                 full_mut_seq[i_chain] = (chain, mut_seq)
                                 mutant_data['sequences'].append(full_mut_seq)
-                                mutant_data['ddG_expt'].append(np.NaN)
+                                mutant_data['ddG_expt'].append(np.nan)
                                 mutant_data['mut_chains'].append(chain)
             chain_lens_dicts[pdb] = {chain: len(chain_seq) for chain, chain_seq in mutant_data['sequences'][-1]}
 
