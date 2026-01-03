@@ -11,6 +11,7 @@ import matplotlib.colors as mcolors
 from matplotlib.patches import Rectangle
 from matplotlib.collections import LineCollection
 from collections import defaultdict
+import omegaconf
 from Bio.PDB import PDBParser, PDBIO
 from Bio.Data.IUPACData import protein_letters_1to3
 import etab_utils as etab_utils
@@ -346,7 +347,7 @@ def process_data(cfg):
 
     # If predicting binding energies, load information about chain separation
     if cfg.inference.binding_energy_json:
-        if type(cfg.inference.binding_energy_json) == dict:
+        if type(cfg.inference.binding_energy_json) in [dict, omegaconf.dictconfig.DictConfig]:
             binding_energy_chains = cfg.inference.binding_energy_json
         else:
             with open(cfg.inference.binding_energy_json, 'r') as f:
