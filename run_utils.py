@@ -346,11 +346,14 @@ def process_data(cfg):
 
     # If predicting binding energies, load information about chain separation
     if cfg.inference.binding_energy_json:
-        with open(cfg.inference.binding_energy_json, 'r') as f:
-            binding_energy_chains = json.load(f)
-        for pdb in pdb_list:
-            if not pdb in binding_energy_chains:
-                binding_energy_chains[pdb] = None
+        if type(cfg.inference.binding_energy_json) == dict:
+            binding_energy_chains = cfg.inference.binding_energy_json
+        else:
+            with open(cfg.inference.binding_energy_json, 'r') as f:
+                binding_energy_chains = json.load(f)
+            for pdb in pdb_list:
+                if not pdb in binding_energy_chains:
+                    binding_energy_chains[pdb] = None
     else:
         binding_energy_chains = None
 
