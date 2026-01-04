@@ -1,10 +1,57 @@
 # PottsMPNN
 
-Code for running PottsMPNN to generate protein sequences and predict mutational effects (energies).
+Code for running PottsMPNN to generate protein sequences and predict energies of mutations.
 
-## 1. Installation
+## 1. Running PottsMPNN
 
-We recommend using **Conda** to manage the environment and **pip** to install dependencies.
+There are three ways to run the model, ranging from easiest (cloud-based) to advanced (command-line).
+
+### Level 1: Google Colab (Easiest)
+
+Run the model entirely in your browser using Google's free GPU resources. No local installation required.
+
+* **Sequence Generation:** [Use this file to design new sequences for a backbone](https://colab.research.google.com/drive/1Jx447uZHwi_pvLbzYtdL961vsatAjlnd?usp=sharing)
+* **Energy Prediction:** [Use this file to predict ΔΔG values for specific mutations.](https://colab.research.google.com/drive/1nAWcQXW_GQkyyN0X2s0G68w-8y0wDbpx?usp=sharing)
+
+### Level 2: Local Jupyter Notebooks
+
+If you have set up the installation environment (see below), you can run the interactive notebooks locally. This allows for easier file management and faster execution on local GPUs.
+
+1. Start Jupyter:
+```bash
+jupyter notebook
+
+```
+
+
+2. Open `sample_seqs.ipynb` for sequence generation.
+3. Open `energy_prediction.ipynb` for mutational scoring.
+
+### Level 3: Command Line Interface (Advanced)
+
+For batch processing or integration into pipelines, run the Python scripts directly using a YAML configuration file.
+
+**Predicting Energies:**
+
+```bash
+python energy_prediction.py --config inputs/example_energy_config.yaml
+
+```
+
+**Generating Sequences:**
+
+```bash
+python sample_seqs.py --config inputs/example_sample_config.yaml
+
+```
+
+---
+## 2. Installation
+
+We recommend using **Conda** to manage the environment and **pip** to install dependencies.'
+
+### Step 0: Decide If Local Installation Is Needed
+If you are interested in trying out PottsMPNN, you can use the Google Colabs (see above) without needing to install anything.
 
 ### Step 1: Create a Conda Environment
 Create a clean environment with Python 3.10:
@@ -38,51 +85,6 @@ Install the required Python packages using the provided requirements file:
 
 ```bash
 pip install -r requirements.txt
-
-```
-
----
-
-## 2. Running PottsMPNN
-
-There are three ways to run the model, ranging from easiest (cloud-based) to advanced (command-line).
-
-### Level 1: Google Colab (Easiest)
-
-Run the model entirely in your browser using Google's free GPU resources. No local installation required.
-
-* **Sequence Generation:** [Use this file to design new sequences for a backbone](https://colab.research.google.com/drive/1Jx447uZHwi_pvLbzYtdL961vsatAjlnd?usp=sharing)
-* **Energy Prediction:** [Use this file to predict ΔΔG values for specific mutations.](https://colab.research.google.com/drive/1nAWcQXW_GQkyyN0X2s0G68w-8y0wDbpx?usp=sharing)
-
-### Level 2: Local Jupyter Notebooks
-
-If you have set up the installation environment above, you can run the interactive notebooks locally. This allows for easier file management and faster execution on local GPUs.
-
-1. Start Jupyter:
-```bash
-jupyter notebook
-
-```
-
-
-2. Open `sample_seqs.ipynb` for sequence generation.
-3. Open `energy_prediction.ipynb` for mutational scoring.
-
-### Level 3: Command Line Interface (Advanced)
-
-For batch processing or integration into pipelines, run the Python scripts directly using a YAML configuration file.
-
-**Predicting Energies:**
-
-```bash
-python energy_prediction.py --config inputs/example_energy_config.yaml
-
-```
-
-**Generating Sequences:**
-
-```bash
-python sample_seqs.py --config inputs/example_sample_config.yaml
 
 ```
 
@@ -155,6 +157,8 @@ Both pipelines use a configuration dictionary (or YAML file) to control the mode
 * **`inference.noise`**: (float) Amont of noise to add to structures during inference (model only evaluated with 0 noise).
 * **`inference.skip_gaps`**: (bool) Whether to skip gaps in structure (default False).
 * **`inference.chain_ranges`**: Path to JSON specifying ranges of positions (1-indexed) for heatmap plotting. For example, `prot: {A: [1,50], B: [20:30]}` indicates to plot residues 1 to 50 from chain A and residues 20 to 30 from chain B.
+
+---
 
 ## 4. Extracting Energy Tables
 
