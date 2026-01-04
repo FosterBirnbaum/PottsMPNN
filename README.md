@@ -2,6 +2,8 @@
 
 Code for running PottsMPNN to generate protein sequences and predict energies of mutations.
 
+---
+
 ## 1. Running PottsMPNN
 
 There are three ways to run the model, ranging from easiest (cloud-based) to advanced (command-line).
@@ -45,8 +47,11 @@ python sample_seqs.py --config inputs/example_config_sample_seqs.yaml
 python energy_prediction.py --config inputs/example_config_energy_prediction.yaml
 
 ```
+
 For any method, you can verify the installation worked by comparing the outputs to the files in the `\outputs` directory in this repository.
+
 ---
+
 ## 2. Installation
 
 We recommend using **Conda** to manage the environment and **pip** to install dependencies.'
