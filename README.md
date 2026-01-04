@@ -31,20 +31,21 @@ jupyter notebook
 
 For batch processing or integration into pipelines, run the Python scripts directly using a YAML configuration file.
 
-**Predicting Energies:**
-
-```bash
-python energy_prediction.py --config inputs/example_energy_config.yaml
-
-```
 
 **Generating Sequences:**
 
 ```bash
-python sample_seqs.py --config inputs/example_sample_config.yaml
+python sample_seqs.py --config inputs/example_config_sample_seqs.yaml
 
 ```
 
+**Predicting Energies:**
+
+```bash
+python energy_prediction.py --config inputs/example_config_energy_prediction.yaml
+
+```
+For any method, you can verify the installation worked by comparing the outputs to the files in the `\outputs` directory in this repository.
 ---
 ## 2. Installation
 
