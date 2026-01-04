@@ -29,7 +29,7 @@ jupyter notebook
 2. Open `sample_seqs.ipynb` for sequence generation.
 3. Open `energy_prediction.ipynb` for mutational scoring.
 
-### Level 3: Command Line Interface (Advanced)
+### Level 3: Command Line Interface
 
 For batch processing or integration into pipelines, run the Python scripts directly using a YAML configuration file. Note that the configuration files by default set `dev` to `cuda`. If your system does not have a PyTorch installation with CUDA, you must set `dev` to `cpu`.
 
