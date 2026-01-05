@@ -166,7 +166,11 @@ Both pipelines use a configuration dictionary (or YAML file) to control the mode
 
 ---
 
-## 4. Extracting Energy Tables
+## 4. PottsMPNN as a replacement for ProteinMPNN
+
+PottsMPNN was built from the ProteinMPNN architecture and can accomplish any task ProteinMPNN can do. The scripts provided above take advantage of the Potts model learned by PottsMPNN, but you can also use PottsMPNN as a direct ProteinMPNN replacement by removing the `etab_out` layer of PottsMPNN.
+
+## 5. Extracting Energy Tables
 
 To extract Potts model energy tables for an input `.pdb` file `input_pdb` and list of chains `partition`, you can use the following code:
 
@@ -193,7 +197,7 @@ sparse_etab = expand_etab(etab, E_idx)
 
 ---
 
-## 5. Energy Benchmark Datasets
+## 6. Energy Benchmark Datasets
 
 The energy datasets used in the paper are located at `\energy_benchmark_datasets`. For Megascale and FireProt, we removed proteins from the datasets that were present in the training set. See the following citations for each dataset:
 * Megascale: K Tsuboyama, et al., Mega-scale experimental analysis of protein folding stability in biology
