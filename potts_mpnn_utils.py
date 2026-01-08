@@ -274,6 +274,8 @@ def parse_PDB_seq_only(path_to_pdb, input_chain_list=None, ca_only=False, skip_g
 def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_dict=None, tied_positions_dict=None, pssm_dict=None, bias_by_res_dict=None, ca_only=False, vocab=21):
     """ Pack and pad batch into torch tensors """
     alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    if vocab == 22:
+        alphabet = 'ACDEFGHIKLMNPQRSTVWYX-'
     B = len(batch)
     lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
     L_max = max([len(b['seq']) for b in batch])
@@ -1368,16 +1370,16 @@ class PottsMPNN(nn.Module):
                 h_V_t = torch.gather(h_V_stack[-1], 1, t[:,None,None].repeat(1,1,h_V_stack[-1].shape[-1]))[:,0]
                 logits = self.W_out(h_V_t) / temperature
                 probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
-                if pssm_bias_flag:
+                if pssm_bias_flag and (pssm_coef.numel()>0) or (pssm_bias.numel()>0):
                     pssm_coef_gathered = torch.gather(pssm_coef, 1, t[:,None])[:,0]
                     pssm_bias_gathered = torch.gather(pssm_bias, 1, t[:,None,None].repeat(1,1,pssm_bias.shape[-1]))[:,0]
                     probs = (1-pssm_multi*pssm_coef_gathered[:,None])*probs + pssm_multi*pssm_coef_gathered[:,None]*pssm_bias_gathered
-                if pssm_log_odds_flag:
+                if pssm_log_odds_flag and pssm_log_odds_mask.numel()>0:
                     pssm_log_odds_mask_gathered = torch.gather(pssm_log_odds_mask, 1, t[:,None, None].repeat(1,1,pssm_log_odds_mask.shape[-1]))[:,0] #[B, self.vocab]
                     probs_masked = probs*pssm_log_odds_mask_gathered
                     probs_masked += probs * 0.001
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
-                if omit_AA_mask_flag:
+                if omit_AA_mask_flag and omit_AA_mask.numel()>0:
                     omit_AA_mask_gathered = torch.gather(omit_AA_mask, 1, t[:,None, None].repeat(1,1,omit_AA_mask.shape[-1]))[:,0] #[B, self.vocab]
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
@@ -1443,16 +1445,16 @@ class PottsMPNN(nn.Module):
                 h_V_t = torch.gather(h_V_stack[-1], 1, t[:,None,None].repeat(1,1,h_V_stack[-1].shape[-1]))[:,0]
                 logits = self.W_out(h_V_t) / temperature
                 probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
-                if pssm_bias_flag:
+                if pssm_bias_flag and (pssm_coef.numel()>0) or (pssm_bias.numel()>0):
                     pssm_coef_gathered = torch.gather(pssm_coef, 1, t[:,None])[:,0]
                     pssm_bias_gathered = torch.gather(pssm_bias, 1, t[:,None,None].repeat(1,1,pssm_bias.shape[-1]))[:,0]
                     probs = (1-pssm_multi*pssm_coef_gathered[:,None])*probs + pssm_multi*pssm_coef_gathered[:,None]*pssm_bias_gathered
-                if pssm_log_odds_flag:
+                if pssm_log_odds_flag and pssm_log_odds_mask.numel()>0:
                     pssm_log_odds_mask_gathered = torch.gather(pssm_log_odds_mask, 1, t[:,None, None].repeat(1,1,pssm_log_odds_mask.shape[-1]))[:,0] #[B, self.vocab]
                     probs_masked = probs*pssm_log_odds_mask_gathered
                     probs_masked += probs * 0.001
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
-                if omit_AA_mask_flag:
+                if omit_AA_mask_flag and omit_AA_mask.numel()>0:
                     omit_AA_mask_gathered = torch.gather(omit_AA_mask, 1, t[:,None, None].repeat(1,1,omit_AA_mask.shape[-1]))[:,0] #[B, self.vocab]
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
@@ -1553,16 +1555,16 @@ class PottsMPNN(nn.Module):
             else:
                 bias_by_res_gathered = bias_by_res[:,t,:] #[B, self.vocab]
                 probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
-                if pssm_bias_flag:
+                if pssm_bias_flag and (pssm_coef.numel()>0) or (pssm_bias.numel()>0):
                     pssm_coef_gathered = pssm_coef[:,t]
                     pssm_bias_gathered = pssm_bias[:,t]
                     probs = (1-pssm_multi*pssm_coef_gathered[:,None])*probs + pssm_multi*pssm_coef_gathered[:,None]*pssm_bias_gathered
-                if pssm_log_odds_flag:
+                if pssm_log_odds_flag and pssm_log_odds_mask.numel()>0:
                     pssm_log_odds_mask_gathered = pssm_log_odds_mask[:,t]
                     probs_masked = probs*pssm_log_odds_mask_gathered
                     probs_masked += probs * 0.001
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
-                if omit_AA_mask_flag:
+                if omit_AA_mask_flag and omit_AA_mask.numel()>0:
                     omit_AA_mask_gathered = omit_AA_mask[:,t]
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
@@ -1643,16 +1645,16 @@ class PottsMPNN(nn.Module):
             else:
                 bias_by_res_gathered = bias_by_res[:,t,:] #[B, self.vocab]
                 probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
-                if pssm_bias_flag:
+                if pssm_bias_flag and (pssm_coef.numel()>0) or (pssm_bias.numel()>0):
                     pssm_coef_gathered = pssm_coef[:,t]
                     pssm_bias_gathered = pssm_bias[:,t]
                     probs = (1-pssm_multi*pssm_coef_gathered[:,None])*probs + pssm_multi*pssm_coef_gathered[:,None]*pssm_bias_gathered
-                if pssm_log_odds_flag:
+                if pssm_log_odds_flag and pssm_log_odds_mask.numel()>0:
                     pssm_log_odds_mask_gathered = pssm_log_odds_mask[:,t]
                     probs_masked = probs*pssm_log_odds_mask_gathered
                     probs_masked += probs * 0.001
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
-                if omit_AA_mask_flag:
+                if omit_AA_mask_flag and omit_AA_mask.numel()>0:
                     omit_AA_mask_gathered = omit_AA_mask[:,t]
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, self.vocab]
