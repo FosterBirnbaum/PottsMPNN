@@ -448,6 +448,7 @@ def process_data(cfg):
             wt_info = parse_PDB_seq_only(os.path.join(cfg.input_dir, pdb + '.pdb'), skip_gaps=cfg.inference.skip_gaps)
             wt_chains = [(chain, wt_info[f'seq_chain_{chain}']) for chain in wt_info['chain_order']]
             for i_chain, chain in enumerate(wt_info['chain_order']):
+                if chain in cfg.inference.exclude_chains: continue
                 mut_seq = ""
                 for i, wtAA in enumerate(wt_info[f'seq_chain_{chain}']):
                     if wtAA != '-':
