@@ -538,7 +538,7 @@ def score_seqs(model, cfg, pdb_data, nrgs, seqs, partition=None):
     ----------  
     model : PottsMPNN model
         Model with which to score sequences
-    cfg : omegacong
+    cfg : omegaconf
         Config object
     pdb_data : dict
         dict with PDB information
