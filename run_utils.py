@@ -1,3 +1,4 @@
+from tabnanny import verbose
 import torch
 import torch.nn.functional as F
 import copy
@@ -428,10 +429,14 @@ def process_data(cfg):
                 mut_seq = []
                 for chain in wt_info['chain_order']:
                     mut_chain = copy.deepcopy(wt_info[f'seq_chain_{chain}'])
+                    if '-' in mut_chain:
+                        warning = "Try setting 'cfg.inference.skip_gaps' to True in config to avoid issues with gaps in mutant sequences."
+                    else:
+                        warning = ""
                     if len(mut_type_dict[chain]) > 0: # Use mutant sequence
                         for mut_type in mut_type_dict[chain]:
                             wt, pos, mut = mut_type[0], int(mut_type[1:-1]), mut_type[-1]
-                            assert wt == mut_chain[pos], "Mutation information must match wildtype sequence at the mutation position"
+                            assert wt == mut_chain[pos], f"Mutation information ({mut_type}) must match wildtype sequence ({mut_chain}) at the mutation position for pdb {pdb}, chain {chain}. {warning}"
                             assert mut in mut_alphabet, "Mutation must be one of 20 canonical amino acids"
                             mut_chain = mut_chain[:pos] + mut + mut_chain[pos+1:]
                         mut_seq.append((chain, mut_chain))
@@ -599,7 +604,8 @@ def plot_data(data,
               figsize=(20, 5),
               ener_type='ddG',
               chain_ranges=None,
-              chain_order=None):
+              chain_order=None,
+              verbose=True):
     """
     Plots a heatmap of mutation energies from a dataframe.
 
@@ -612,6 +618,7 @@ def plot_data(data,
                    1. Maps the split input sequences to these names (Index 0 -> chain_order[0]).
                    2. Determines the order in which chains are plotted.
                    If None, defaults to ['A', 'B', 'C'...] and alphabetical sort.
+    - verbose : Bool, if True the plot window will be shown.
     """
 
     amino_acids = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L',
@@ -825,7 +832,10 @@ def plot_data(data,
 
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    if verbose:
+        plt.show()
+    else:
+        plt.close()
 
 def rewrite_pdb_sequences(pdb_dict, pdb_in_dir, pdb_out_dir):
     """

@@ -103,7 +103,8 @@ def energy_prediction(args):
                 figsize=(20, 5),
                 ener_type='ddG',
                 chain_order=list(chain_lens_dicts[pdb].keys()),
-                chain_ranges=chain_ranges[pdb] if chain_ranges else None
+                chain_ranges=chain_ranges[pdb] if chain_ranges else None,
+                verbose=False
                 )
 
 if __name__ == "__main__":
