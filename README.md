@@ -201,7 +201,7 @@ sparse_etab = expand_etab(etab, E_idx)
 
 ## 6. Energy Benchmark Datasets
 
-The energy datasets used in the paper are located at `\energy_benchmark_datasets`. For Megascale and FireProt, we removed proteins from the datasets that were present in the training set. See the following citations for each dataset:
+The energy datasets used in the paper are located at `\energy_benchmark_datasets`. For Megascale and FireProt, we removed proteins from the datasets that were present in the training set. See the following citations for each dataset.
 * Megascale: K Tsuboyama, et al., Mega-scale experimental analysis of protein folding stability in biology
 and design. Nature 620, 434–444 (2023). [https://doi.org/10.1038/s41586-023-06328-6](https://doi.org/10.1038/s41586-023-06328-6)
 * FireProt: J Stourac, et al., FireProtDB: database of manually curated protein stability data. Nucleic
