@@ -124,6 +124,7 @@ We provide vanilla and soluble model weights. For each, we provide three version
 * `"none"`: No optimization (just autoregressive sampling).
 * `"potts"`: Optimizes sequence using Potts energy.
 * `"nodes"`: Optimizes node features.
+* **`inference.optimization_temperature`**: (float) Optimization temperature. Lower values (e.g., 0.0 or 0.1) produce more probable sequences; higher values (e.g., 1.0) add diversity. Note that the model was only benchmarked with this temperature set to 0.0.
 * **`inference.binding_energy_optimization`**: How to optimize using binding energies:
 * `"none"`: Optimize stability only.
 * `"both"`: Jointly optimize stability and binding affinity.
@@ -134,7 +135,7 @@ We provide vanilla and soluble model weights. For each, we provide three version
 * **`inference.optimize_fasta`**: (bool) Optimize sequences found in an input `.fasta` file.
 * **`inference.write_pdb`**: (bool) Write new `.pdb` files with the best sequences found for each structure.
 
-#### Constraints & Biases (inhereted from ProteinMPNN)
+#### Constraints & Biases (inhereted from ProteinMPNN) -- Note that all of these will apply to the optimization as well as to the autoregressive sampling
 * **`inference.fixed_positions_json`**: Path to JSON defining 1-indexed positions to fix (keep as wildtype).
 * **`inference.pssm_json`**: Path to JSON containing Position-Specific Scoring Matrix (bias per position).
 * **`inference.omit_AA_json`**: Path to JSON defining amino acids to ban at specific positions.
