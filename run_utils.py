@@ -58,7 +58,7 @@ def cat_neighbors_nodes(h_nodes, h_neighbors, E_idx):
     h_nn = torch.cat([h_neighbors, h_nodes], -1)
     return h_nn
 
-def optimize_sequence(seq, etab, E_idx, mask, chain_mask, opt_type, seq_encoder,
+def optimize_sequence(seq, etab, E_idx, mask, chain_mask, opt_type, seq_encoder, residue_mask,
                       model=None, h_E=None, h_EXV_encoder=None, h_V=None,
                       constant=None, decoding_order=None, partition_etabs=None,
                       partition_index=None, inter_mask=None, binding_optimization=None):
@@ -77,9 +77,8 @@ def optimize_sequence(seq, etab, E_idx, mask, chain_mask, opt_type, seq_encoder,
         Optimization strategy indicator (e.g., contains 'nodes' or 'converge').
     seq_encoder : callable
         Function that encodes sequences to integer tensors.
-    ener_fn : callable
-        Energy evaluation function used in some modes (returns predicted_E).
-    ... (other arguments forwarded to specialized flows)
+    residue_mask : torch.Tensor
+        Mask to restrict optimization to certain residues.
 
     Returns
     -------
@@ -129,6 +128,8 @@ def optimize_sequence(seq, etab, E_idx, mask, chain_mask, opt_type, seq_encoder,
                     )
 
                     predicted_E = predicted_E - unbound_predicted_E # Bound - unbound
+
+                predicted_E *= residue_mask
 
                 seq = sort_seqs[0, predicted_E.argmin()].unsqueeze(0)
                 ener_delta += torch.min(predicted_E)
