@@ -135,13 +135,14 @@ We provide vanilla and soluble model weights. For each, we provide three version
 * **`inference.optimize_fasta`**: (bool) Optimize sequences found in an input `.fasta` file.
 * **`inference.write_pdb`**: (bool) Write new `.pdb` files with the best sequences found for each structure.
 
-#### Constraints & Biases (inhereted from ProteinMPNN) -- Note that all of these will apply to the optimization as well as to the autoregressive sampling
+#### Constraints & Biases (inhereted from ProteinMPNN, except `tied_epistasis`) -- Note that all of these will apply to the optimization as well as to the autoregressive sampling
 * **`inference.fixed_positions_json`**: Path to JSON defining 1-indexed positions to fix (keep as wildtype).
 * **`inference.pssm_json`**: Path to JSON containing Position-Specific Scoring Matrix (bias per position).
 * **`inference.omit_AA_json`**: Path to JSON defining amino acids to ban at specific positions.
 * **`inference.bias_AA_json`**: Path to JSON defining global amino acid biases.
 * **`inference.omit_AAs`**: List of amino acids to globally omit from design (e.g., `['C', 'W']`).
 * **`inference.tied_positions_json`**: Path to JSON containing tied position information for each structure.
+* **`inference.tied_epistasis`**: (bool) Whether to estimate epistasis when modeling tied positions during optimization. If true, all tied positions are set to the same residue, and the energy of that sequence is estimated. If false, each tied position is set to each residue separately, and the energies of the sequences with the individual mutations are averaged.
 * **`inference.bias_by_res_json`**: Path to JSON containing residue bias info (shape chain length by vocab) for each chain in each structure.
 * **`inference.pssm_threshold`**: (float) A value between `-inf` and `+inf` to restrict per position AAs.
 * **`inference.pssm_multi`**: (float) A value between `[0.0, 1.0]`, `0.0` means do not use pssm, `1.0` ignore MPNN predictions.
