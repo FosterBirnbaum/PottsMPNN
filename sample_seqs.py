@@ -8,7 +8,7 @@ import pandas as pd
 from collections import defaultdict
 from itertools import accumulate
 from omegaconf import OmegaConf
-from run_utils import get_etab, optimize_sequence, string_to_int, process_configs, cat_neighbors_nodes, rewrite_pdb_sequences, chain_to_partition_map, inter_partition_contact_mask
+from run_utils import get_etab, optimize_sequence, tied_optimize_sequence, string_to_int, process_configs, cat_neighbors_nodes, rewrite_pdb_sequences, chain_to_partition_map, inter_partition_contact_mask
 from potts_mpnn_utils import PottsMPNN, tied_featurize, nlcpl, parse_PDB, parse_PDB_seq_only, loss_nll
 import etab_utils as etab_utils
 
@@ -209,7 +209,7 @@ def sample_seqs(args):
                 randn = torch.randn(chain_mask.shape, device=X.device)
 
                 # Decoder
-                if tied_positions_dict is None:
+                if tied_positions_dict is None or not tied_pos_list_of_lists_list[0]:
                     output_dict, all_probs = model.decoder(
                         h_V, E_idx, h_E, randn, S_true, chain_mask, chain_encoding_all, residue_idx, mask=mask, 
                         temperature=cfg.inference.temperature, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, 
@@ -328,15 +328,26 @@ def sample_seqs(args):
                         decoding_orders[pdb_with_chain_suffix] = decoding_order
                     else:
                         decoding_orders[pdb_with_chain_suffix][suffix_key.split('_')[1]] = decoding_order
-                    
-                opt_seq = optimize_sequence(
-                    seq_to_opt, etab, E_idx, mask*chain_M_pos, chain_mask, cfg.inference.optimization_mode, 
-                    etab_utils.seq_to_ints, cfg.inference.optimization_temperature, constant, constant_bias, 
-                    bias_by_res, cfg.inference.pssm_bias_flag, pssm_coef, pssm_bias, cfg.inference.pssm_multi,
-                    cfg.inference.pssm_log_odds_flag, pssm_log_odds_mask, omit_AA_mask, model, h_E, h_EXV_encoder, h_V, 
-                    decoding_order=decoding_order, partition_etabs=partition_etabs, partition_index=partition_index,
-                    inter_mask=inter_mask, binding_optimization=cfg.inference.binding_energy_optimization, vocab=cfg.model.vocab
-                )
+                if tied_positions_dict is None or not tied_pos_list_of_lists_list[0]:
+                    opt_seq = optimize_sequence(
+                        seq_to_opt, etab, E_idx, mask*chain_M_pos, chain_mask, cfg.inference.optimization_mode, 
+                        etab_utils.seq_to_ints, cfg.inference.optimization_temperature, constant, constant_bias, 
+                        bias_by_res, cfg.inference.pssm_bias_flag, pssm_coef, pssm_bias, cfg.inference.pssm_multi,
+                        cfg.inference.pssm_log_odds_flag, pssm_log_odds_mask, omit_AA_mask, model, h_E, h_EXV_encoder, h_V, 
+                        decoding_order=decoding_order, partition_etabs=partition_etabs, partition_index=partition_index,
+                        inter_mask=inter_mask, binding_optimization=cfg.inference.binding_energy_optimization, vocab=cfg.model.vocab
+                    )
+                else:
+                    opt_seq = tied_optimize_sequence(
+                        seq_to_opt, etab, E_idx, mask*chain_M_pos, chain_mask, cfg.inference.optimization_mode, 
+                        etab_utils.seq_to_ints, cfg.inference.optimization_temperature, constant, constant_bias, 
+                        bias_by_res, cfg.inference.pssm_bias_flag, pssm_coef, pssm_bias, cfg.inference.pssm_multi,
+                        cfg.inference.pssm_log_odds_flag, pssm_log_odds_mask, omit_AA_mask, model, h_E, h_EXV_encoder, h_V, 
+                        decoding_order=decoding_order, partition_etabs=partition_etabs, partition_index=partition_index,
+                        inter_mask=inter_mask, binding_optimization=cfg.inference.binding_energy_optimization, vocab=cfg.model.vocab,
+                        tied_pos=tied_pos_list_of_lists_list[0], tied_beta=tied_beta, tied_epistasis=cfg.inference.tied_epistasis
+                    )
+
                 opt_seq = etab_utils.ints_to_seq_torch(opt_seq)
                 opt_seq = ':'.join(opt_seq[a:b] for a, b in zip(chain_cuts, chain_cuts[1:]))
                 opt_seqs[key] = opt_seq
