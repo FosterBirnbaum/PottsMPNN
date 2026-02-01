@@ -131,15 +131,20 @@ def optimize_sequence(seq, etab, E_idx, mask, chain_mask, opt_type, seq_encoder,
                     unbound_predicted_E = etab_utils.positional_potts_energy(
                         partition_etab, partition_E_idx, partition_seq, partition_pos
                     )
-
-                    predicted_E = predicted_E - unbound_predicted_E # Bound - unbound
+                    # predicted_E = (predicted_E / etab.shape[2]) - (unbound_predicted_E / partition_etab.shape[2]) # Bound - unbound
+                    predicted_E = (predicted_E - predicted_E[seq[0,pos].cpu().item()]) - (unbound_predicted_E - unbound_predicted_E[seq[0,pos].cpu().item()]) # Bound - unbound
 
                 # Sample from predicted energies
-                predicted_E = predicted_E[:vocab] # Gap should never be chosen if not in model vocab
+                predicted_E = predicted_E[:vocab]
                 t = torch.tensor([pos], dtype=torch.long, device=E_idx.device)
-                bias_by_res_gathered = torch.gather(bias_by_res, 1, t[:,None,None].repeat(1,1,predicted_E.shape[-1]))[:,0,:] #[B, self.vocab]
+                bias_by_res_gathered = torch.gather(bias_by_res, 1, t[:,None,None].repeat(1,1,predicted_E.shape[-1]))[:,0,:20] #[B, 20]
                 logits = -predicted_E / optimization_temp
+                logits = logits[:20] # Gap and X should never be chosen
+                constant = constant[:20]
+                constant_bias = constant_bias[:20]
                 probs = F.softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/optimization_temp+bias_by_res_gathered/optimization_temp, dim=-1)
+                pad = (0, vocab-20)
+                probs = F.pad(probs, pad, "constant", 0) # Reshape to match other tensor shapes
                 if pssm_bias_flag and (pssm_coef.numel()>0) or (pssm_bias.numel()>0):
                     pssm_coef_gathered = torch.gather(pssm_coef, 1, t[:,None])[:,0]
                     pssm_bias_gathered = torch.gather(pssm_bias, 1, t[:,None,None].repeat(1,1,pssm_bias.shape[-1]))[:,0]
@@ -877,6 +882,13 @@ def score_seqs(model, cfg, pdb_data, nrgs, seqs, partition=None):
         scores -= torch.mean(scores, dim=1)
     return scores, scored_seqs, reference_scores
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import matplotlib.colors as mcolors
+from matplotlib.collections import LineCollection
+from matplotlib.patches import Rectangle
+
 def plot_data(data,
               only_mutated_positions=False,
               title='PottsMPNN Predictions',
@@ -886,7 +898,8 @@ def plot_data(data,
               ener_type='ddG',
               chain_ranges=None,
               chain_order=None,
-              verbose=True):
+              verbose=True,
+              pos_dict=None):
     """
     Plots a heatmap of mutation energies from a dataframe.
 
@@ -900,6 +913,11 @@ def plot_data(data,
                    2. Determines the order in which chains are plotted.
                    If None, defaults to ['A', 'B', 'C'...] and alphabetical sort.
     - verbose : Bool, if True the plot window will be shown.
+    - pos_dict : Optional Dict { int: int }.
+                 Keys are 0-indexed positions in the original sequence/heatmap.
+                 Values are the new ranking positions.
+                 If provided, the heatmap columns are filtered to include only keys in pos_dict,
+                 and sorted by their corresponding values.
     """
 
     amino_acids = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L',
@@ -963,13 +981,13 @@ def plot_data(data,
         print("No valid data found to plot.")
         return
 
-    # --- 3. Construct Matrix Columns ---
+    # --- 3. Construct Matrix Columns (Natural Order) ---
     matrix_columns = []   # List of (chain_name, pos, wt_residue)
-    chain_boundaries = [] # List of column indices where new chains start
+    
+    # We remove the chain_boundaries calculation here because reordering invalidates it.
+    # We will calculate boundaries dynamically after reordering.
 
-    current_col_idx = 0
     for c_name in active_chain_names:
-        chain_boundaries.append(current_col_idx)
         full_seq = chain_sequences[c_name]
         
         # Determine valid range for this chain
@@ -998,9 +1016,24 @@ def plot_data(data,
         for pos in positions:
             wt_aa = full_seq[pos - 1] # 0-indexed lookup
             matrix_columns.append((c_name, pos, wt_aa))
-            current_col_idx += 1
-            
-    # Initialize matrix
+
+    # --- 3.5 Reorder Columns ---
+    if pos_dict is not None:
+        # Filter and Sort based on pos_dict
+        # Keys of pos_dict correspond to the index in the matrix_columns list generated above
+        new_columns_with_order = []
+        for i, col_data in enumerate(matrix_columns):
+            if i in pos_dict:
+                # Store (column_data, new_rank)
+                new_columns_with_order.append((col_data, pos_dict[i]))
+        
+        # Sort by the new rank
+        new_columns_with_order.sort(key=lambda x: x[1])
+        
+        # Unpack back to matrix_columns
+        matrix_columns = [x[0] for x in new_columns_with_order]
+
+    # Initialize matrix with the (potentially) new shape
     heatmap_data = np.full((len(amino_acids), len(matrix_columns)), np.nan)
 
     # Fill matrix
@@ -1046,7 +1079,7 @@ def plot_data(data,
     ax.collections[0].colorbar.ax.set_ylabel(clabel, fontsize=12) 
     ax.collections[0].colorbar.ax.tick_params(labelsize=12)
 
-    # --- 5. Styling Missing Data (Exact 'X' using Lines) ---
+    # --- 5. Styling Missing Data ---
     segments = []
     rows, cols = heatmap_data.shape
     for r in range(rows):
@@ -1063,7 +1096,7 @@ def plot_data(data,
         lc = LineCollection(segments, color='gray', linewidths=0.5, alpha=0.5)
         ax.add_collection(lc)
 
-    # --- 6. Formatting Axes & Borders ---
+    # --- 6. Formatting Axes & Dynamic Borders ---
     for tick in ax.get_yticklabels():
         tick.set_rotation(0)
         tick.set_ha('left')
@@ -1087,14 +1120,27 @@ def plot_data(data,
     plt.ylabel('Mutant Residue', fontsize=12)
     plt.title(title, fontsize=12)
 
-    # Add Borders around Chains & Chain Labels
-    boundaries = chain_boundaries + [len(matrix_columns)]
-    
-    for i, c_name in enumerate(active_chain_names):
-        if chain_ranges and c_name not in chain_ranges:
-            continue
-        start = boundaries[i]
-        end = boundaries[i+1]
+    # --- Identify Contiguous Chain Segments for Borders ---
+    # Because of pos_dict, chains might be split or reordered.
+    # We must scan matrix_columns to find where chain ID changes.
+    chain_segments = []
+    if len(matrix_columns) > 0:
+        current_chain = matrix_columns[0][0] # (chain_name, pos, wt)
+        start_idx = 0
+        
+        for i, (c_name, _, _) in enumerate(matrix_columns):
+            if c_name != current_chain:
+                # End of previous segment
+                chain_segments.append((current_chain, start_idx, i))
+                # Start of new segment
+                current_chain = c_name
+                start_idx = i
+        
+        # Append the final segment
+        chain_segments.append((current_chain, start_idx, len(matrix_columns)))
+
+    # Draw Borders and Labels
+    for c_name, start, end in chain_segments:
         width = end - start
         height = len(amino_acids)
         
@@ -1103,10 +1149,8 @@ def plot_data(data,
                          fill=False, edgecolor='black', lw=2, clip_on=False)
         ax.add_patch(rect)
 
-        # 2. Add Chain Label
-        # Calculate center in data coordinates (x-axis)
+        # 2. Add Chain Label (Centered on the segment)
         center_x = (start + end) / 2
-        
         ax.text(center_x, -0.14, f"Chain {c_name}", 
                 ha='center', va='top', fontsize=12, fontweight='bold',
                 transform=ax.get_xaxis_transform())
@@ -1184,7 +1228,7 @@ def rewrite_pdb_sequences(pdb_dict, pdb_in_dir, pdb_out_dir):
 
                 residues = [
                     res for res in chain
-                    if res.id[0] == " "
+                    if res.id[0] == " " or 'MSE' in res.id[0]
                 ]
 
                 if is_visible:

@@ -1386,19 +1386,20 @@ class PottsMPNN(nn.Module):
                 S_t = torch.multinomial(probs, 1)
                 all_probs.scatter_(1, t[:,None,None].repeat(1,1,self.vocab), (chain_mask_gathered[:,:,None,]*probs[:,None,:]).float())
             S_true_gathered = torch.gather(S_true, 1, t[:,None])
-            S_t = (S_t*chain_mask_gathered+S_true_gathered*(1.0-chain_mask_gathered)).long()
+            S_t = torch.where(chain_mask_gathered == 0, S_true_gathered, S_t).long()
             temp1 = self.W_s(S_t)
             h_S.scatter_(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
             S.scatter_(1, t[:,None], S_t)
         output_dict = {"S": S, "probs": all_probs, "decoding_order": decoding_order}
         return output_dict, all_probs, h_V, E_idx, h_E, etab
 
-    def decoder(self, h_V, E_idx, h_E, randn, S_true, chain_mask, chain_encoding_all, residue_idx, mask=None, temperature=1.0, omit_AAs_np=None, bias_AAs_np=None, chain_M_pos=None, omit_AA_mask=None, pssm_coef=None, pssm_bias=None, pssm_multi=None, pssm_log_odds_flag=None, pssm_log_odds_mask=None, pssm_bias_flag=None, bias_by_res=None):
+    def decoder(self, h_V, E_idx, h_E, randn, S_true, chain_mask, chain_encoding_all, residue_idx, mask=None, temperature=1.0, omit_AAs_np=None, bias_AAs_np=None, chain_M_pos=None, omit_AA_mask=None, pssm_coef=None, pssm_bias=None, pssm_multi=None, pssm_log_odds_flag=None, pssm_log_odds_mask=None, pssm_bias_flag=None, bias_by_res=None, decoding_order=None):
         device = h_V.device
 
         # Decoder uses masked self-attention
         chain_mask = chain_mask*chain_M_pos*mask #update chain_M to include missing regions
-        decoding_order = torch.argsort((chain_mask+0.0001)*(torch.abs(randn))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
+        if decoding_order is None:
+            decoding_order = torch.argsort((chain_mask+0.0001)*(torch.abs(randn))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
         mask_size = E_idx.shape[1]
         permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
         order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
@@ -1417,7 +1418,6 @@ class PottsMPNN(nn.Module):
         #chain_mask_combined = chain_mask*chain_M_pos 
         omit_AA_mask_flag = omit_AA_mask != None
 
-
         h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
         h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
         h_EXV_encoder_fw = mask_fw * h_EXV_encoder
@@ -1426,7 +1426,7 @@ class PottsMPNN(nn.Module):
             chain_mask_gathered = torch.gather(chain_mask, 1, t[:,None]) #[B]
             mask_gathered = torch.gather(mask, 1, t[:,None]) #[B]
             bias_by_res_gathered = torch.gather(bias_by_res, 1, t[:,None,None].repeat(1,1,self.vocab))[:,0,:] #[B, self.vocab]
-            if (mask_gathered==0).all(): #for padded or missing regions only
+            if (mask_gathered==0).all(): # for padded or missing regions only
                 S_t = torch.gather(S_true, 1, t[:,None])
             else:
                 # Hidden layers
