@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import json
 import os
@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 from omegaconf import OmegaConf
 
 from potts_mpnn_utils import PottsMPNN, parse_PDB
@@ -70,6 +71,35 @@ def _parse_binding_partitions(binding_energy_json: Optional[str], pdb_name: str)
 def _chain_lengths(pdb_data: dict) -> Dict[str, int]:
     return {chain: len(pdb_data[f"seq_chain_{chain}"]) for chain in pdb_data["chain_order"]}
 
+
+def _partition_sequence(
+    sequence: str,
+    chain_order: Sequence[str],
+    chain_lengths: Dict[str, int],
+    partition: Sequence[str],
+) -> str:
+    offsets = {}
+    offset = 0
+    for chain in chain_order:
+        offsets[chain] = offset
+        offset += chain_lengths[chain]
+    return "".join(
+        sequence[offsets[chain] : offsets[chain] + chain_lengths[chain]]
+        for chain in partition
+        if chain in offsets
+    )
+
+
+def _partition_sequences(
+    sequences: Sequence[str],
+    chain_order: Sequence[str],
+    chain_lengths: Dict[str, int],
+    partition: Sequence[str],
+) -> List[str]:
+    return [
+        _partition_sequence(sequence, chain_order, chain_lengths, partition)
+        for sequence in sequences
+    ]
 
 def _global_position_map(chain_lengths: Dict[str, int]) -> Dict[Tuple[str, int], int]:
     mapping = {}
@@ -129,16 +159,11 @@ def _plot_mutation_distributions(
         return
     os.makedirs(output_dir, exist_ok=True)
     chain_order = list(chain_lengths.keys())
-    chain_offsets = {}
-    offset = 0
-    for chain in chain_order:
-        chain_offsets[chain] = offset
-        offset += chain_lengths[chain]
 
     for depth, df in results.items():
         if df.empty:
             continue
-        counts = np.zeros(sum(chain_lengths.values()), dtype=int)
+        chain_counts = {chain: np.zeros(chain_lengths[chain], dtype=int) for chain in chain_order}
         for mut_list in df["mutations"].fillna(""):
             if not mut_list:
                 continue
@@ -151,16 +176,30 @@ def _plot_mutation_distributions(
                 except ValueError:
                     continue
                 _ = wt, mut_res
-                global_pos = chain_offsets[chain] + pos - 1
-                counts[global_pos] += 1
+                if chain not in chain_counts:
+                    continue
+                chain_counts[chain][pos - 1] += 1
 
-        fig, ax = plt.subplots(figsize=(12, 3))
-        ax.bar(np.arange(len(counts)) + 1, counts, color="#4c78a8")
-        ax.set_title(f"Mutation distribution (depth {depth})")
-        ax.set_xlabel("Global position")
-        ax.set_ylabel("Mutation count")
-        ax.set_xlim(0.5, len(counts) + 0.5)
+        n_chains = len(chain_order)
+        fig, axes = plt.subplots(
+            nrows=n_chains,
+            ncols=1,
+            figsize=(12, max(2.5, 2.0 * n_chains)),
+            sharey=True,
+        )
+        if n_chains == 1:
+            axes = [axes]
+        for ax, chain in zip(axes, chain_order):
+            counts = chain_counts[chain]
+            ax.bar(np.arange(len(counts)) + 1, counts, color="#4c78a8")
+            ax.set_title(f"Chain {chain}")
+            ax.set_xlabel("Position")
+            ax.set_xlim(0.5, len(counts) + 0.5)
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+        fig.suptitle(f"Mutation distribution (depth {depth})")
+        axes[0].set_ylabel("Mutation count")
         fig.tight_layout()
+        fig.subplots_adjust(top=0.9)
         fig.savefig(os.path.join(output_dir, f"mutation_distribution_depth_{depth}.png"))
         plt.close(fig)
 
@@ -173,7 +212,11 @@ def _sequence_mutations(
     sequence: str,
     chain_lengths: Dict[str, int],
     allowed_by_pos: Dict[int, List[str]],
+    allowed_from: Optional[Iterable[str]] = None,
+    allowed_to: Optional[Iterable[str]] = None,
 ) -> List[Tuple[str, Tuple[str, ...]]]:
+    allowed_from_set = set(allowed_from or AMINO_ACIDS)
+    allowed_to_set = set(allowed_to or AMINO_ACIDS)
     chain_order = list(chain_lengths.keys())
     chain_offsets = {}
     offset = 0
@@ -189,7 +232,10 @@ def _sequence_mutations(
             if global_pos not in allowed_by_pos:
                 continue
             wt = sequence[global_pos]
-            for mut in allowed_by_pos[global_pos]:
+            if wt not in allowed_from_set:
+                continue
+            allowed_targets = [aa for aa in allowed_by_pos[global_pos] if aa in allowed_to_set]
+            for mut in allowed_targets:
                 if mut == wt:
                     continue
                 new_seq = sequence[:global_pos] + mut + sequence[global_pos + 1 :]
@@ -201,50 +247,72 @@ def _sequence_mutations(
 def _score_sequences(
     model: PottsMPNN,
     cfg: OmegaConf,
-    pdb_data: dict,
+    pdb_data_list: Sequence[dict],
     sequences: Sequence[str],
-    binding_partitions: List[List[str]],
+    binding_partitions_list: Sequence[List[List[str]]],
     energy_mode: str,
 ) -> np.ndarray:
     cfg.inference.ddG = True
     cfg.inference.mean_norm = False
     cfg.inference.filter = False
+    if len(pdb_data_list) != len(binding_partitions_list):
+        raise ValueError("pdb_data_list and binding_partitions_list must be the same length.")
 
-    scores, _, _ = score_seqs(
-        model, cfg, pdb_data, [0.0] * len(sequences), list(sequences), track_progress=True
-    )
-    scores = scores.squeeze(0)
-
-    if energy_mode == "stability":
-        return scores.cpu().numpy()
-
-    if not binding_partitions:
-        raise ValueError("Binding energy scoring requires binding_energy_json partitions.")
-
-    unbound_scores = torch.zeros_like(scores)
-    for partition in binding_partitions:
-        partition_scores, _, _ = score_seqs(
-            model,
-            cfg,
-            pdb_data,
-            [0.0] * len(sequences),
-            list(sequences),
-            partition=partition,
-            track_progress=True,
+    all_scores = []
+    for pdb_data, binding_partitions in zip(pdb_data_list, binding_partitions_list):
+        chain_order = pdb_data[0]["chain_order"]
+        chain_lengths = _chain_lengths(pdb_data[0])
+        scores, _, _ = score_seqs(
+            model, cfg, pdb_data, [0.0] * len(sequences), list(sequences), track_progress=True
         )
-        unbound_scores = unbound_scores + partition_scores.squeeze(0)
+        scores = scores.squeeze(0)
 
-    binding_scores = scores - unbound_scores
-    if energy_mode == "binding":
-        return binding_scores.cpu().numpy()
-    if energy_mode == "both":
-        combined = scores + binding_scores
-        return combined.cpu().numpy()
-    raise ValueError("energy_mode must be one of: 'stability', 'binding', 'both'.")
+        if energy_mode == "stability":
+            all_scores.append(scores.cpu().numpy())
+            continue
+
+        if not binding_partitions:
+            raise ValueError("Binding energy scoring requires binding_energy_json partitions.")
+
+        unbound_scores = torch.zeros_like(scores)
+        for partition in binding_partitions:
+            partition_sequences = _partition_sequences(
+                sequences, chain_order, chain_lengths, partition
+            )
+            partition_scores, _, _ = score_seqs(
+                model,
+                cfg,
+                pdb_data,
+                [0.0] * len(sequences),
+                partition_sequences,
+                partition=partition,
+                track_progress=True,
+            )
+            unbound_scores = unbound_scores + partition_scores.squeeze(0)
+
+        binding_scores = scores - unbound_scores
+        if energy_mode == "binding":
+            all_scores.append(binding_scores.cpu().numpy())
+        elif energy_mode == "both":
+            combined = scores + binding_scores
+            all_scores.append(combined.cpu().numpy())
+        else:
+            raise ValueError("energy_mode must be one of: 'stability', 'binding', 'both'.")
+
+    return np.mean(np.stack(all_scores, axis=0), axis=0)
+
+
+def _normalize_amino_acids(amino_acids: Optional[Iterable[str]]) -> Optional[List[str]]:
+    if amino_acids is None:
+        return None
+    normalized = [aa for aa in amino_acids if aa in AMINO_ACIDS]
+    if not normalized:
+        raise ValueError("Provided amino acid filter did not match any canonical residues.")
+    return normalized
 
 
 def recursive_mutation_search(
-    pdb_path: str,
+    pdb_paths: Union[str, Sequence[str]],
     cfg_path: str,
     max_mutations: int,
     top_percent: float,
@@ -254,13 +322,15 @@ def recursive_mutation_search(
     binding_energy_json: Optional[str] = None,
     energy_mode: str = "stability",
     plot_dir: Optional[str] = None,
+    allowed_from_aas: Optional[Iterable[str]] = None,
+    allowed_to_aas: Optional[Iterable[str]] = None,
 ) -> Dict[int, pd.DataFrame]:
     """Search mutations iteratively and return the top percent at each depth.
 
     Parameters
     ----------
-    pdb_path : str
-        Path to input PDB file.
+    pdb_paths : str or sequence of str
+        Path(s) to input PDB file(s). Multiple files must share the same length.
     cfg_path : str
         Path to PottsMPNN energy prediction config (YAML).
     max_mutations : int
@@ -278,6 +348,10 @@ def recursive_mutation_search(
         "stability", "binding", or "both". "both" is stability + binding.
     plot_dir : str, optional
         If provided, save mutation distribution plots to this directory.
+    allowed_from_aas : iterable, optional
+        Amino acids that are allowed to be mutated from (wildtype filter).
+    allowed_to_aas : iterable, optional
+        Amino acids that are allowed to be mutated to (mutant filter).
 
     Returns
     -------
@@ -291,24 +365,44 @@ def recursive_mutation_search(
         raise ValueError("top_percent must be within (0, 100].")
 
     model, cfg = load_model_from_config(cfg_path)
-    pdb_data = parse_PDB(pdb_path, skip_gaps=cfg.inference.skip_gaps)
-    pdb_name = pdb_data[0]["name"]
+    pdb_path_list = [pdb_paths] if isinstance(pdb_paths, str) else list(pdb_paths)
+    if not pdb_path_list:
+        raise ValueError("pdb_paths must contain at least one PDB path.")
+    pdb_data_list = [parse_PDB(path, skip_gaps=cfg.inference.skip_gaps) for path in pdb_path_list]
+    pdb_names = [pdb_data[0]["name"] for pdb_data in pdb_data_list]
 
-    chain_lengths = _chain_lengths(pdb_data[0])
+    chain_lengths = _chain_lengths(pdb_data_list[0][0])
+    total_length = sum(chain_lengths.values())
+    chain_order = pdb_data_list[0][0]["chain_order"]
+    for pdb_data in pdb_data_list[1:]:
+        if pdb_data[0]["chain_order"] != chain_order:
+            raise ValueError("All PDBs must have the same chain order.")
+        if sum(_chain_lengths(pdb_data[0]).values()) != total_length:
+            raise ValueError("All PDBs must have the same total sequence length.")
     allowed_by_pos = _allowed_mutations_by_position(
         chain_lengths,
         allowed_mutations,
         disallowed_chains=disallowed_chains,
     )
-    binding_partitions = _parse_binding_partitions(binding_energy_json, pdb_name)
+    binding_partitions_list = [
+        _parse_binding_partitions(binding_energy_json, pdb_name) for pdb_name in pdb_names
+    ]
+    normalized_from = _normalize_amino_acids(allowed_from_aas)
+    normalized_to = _normalize_amino_acids(allowed_to_aas)
 
-    current = [Candidate(sequence=pdb_data[0]["seq"], mutations=tuple())]
+    current = [Candidate(sequence=pdb_data_list[0][0]["seq"], mutations=tuple())]
     results: Dict[int, pd.DataFrame] = {}
 
     for depth in range(1, max_mutations + 1):
         generated: Dict[str, Candidate] = {}
         for candidate in current:
-            for new_seq, new_mut in _sequence_mutations(candidate.sequence, chain_lengths, allowed_by_pos):
+            for new_seq, new_mut in _sequence_mutations(
+                candidate.sequence,
+                chain_lengths,
+                allowed_by_pos,
+                allowed_from=normalized_from,
+                allowed_to=normalized_to,
+            ):
                 mutations = candidate.mutations + new_mut
                 if new_seq in generated:
                     continue
@@ -320,7 +414,9 @@ def recursive_mutation_search(
             continue
 
         sequences = list(generated.keys())
-        scores = _score_sequences(model, cfg, pdb_data, sequences, binding_partitions, energy_mode)
+        scores = _score_sequences(
+            model, cfg, pdb_data_list, sequences, binding_partitions_list, energy_mode
+        )
         for seq, score in zip(sequences, scores):
             generated[seq].score = float(score)
 
