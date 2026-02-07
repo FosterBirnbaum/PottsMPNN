@@ -333,7 +333,7 @@ def _plot_lineage_alluvial(
         top_mutations = sorted(counts, key=counts.get, reverse=True)[:top_n]
         step_nodes[step] = top_mutations
 
-    fig, ax = plt.subplots(figsize=(2.5 * max_depth, 6.5))
+    fig, ax = plt.subplots(figsize=(1.8 * max_depth, 5.8))
     ax.axis("off")
 
     max_total = max(sum(step_counts.get(step, {}).get(m, 0) for m in step_nodes.get(step, []))
@@ -380,7 +380,7 @@ def _plot_lineage_alluvial(
                 color = cmap(0.5)
             else:
                 color = cmap((avg_score - score_min) / (score_max - score_min))
-        ax.add_patch(plt.Rectangle((x - 0.15, y), 0.3, height, color=color, alpha=0.8))
+        ax.add_patch(plt.Rectangle((x - 0.14, y), 0.28, height, color=color, alpha=0.85))
         ax.text(x, y + height / 2, node, ha="center", va="center", fontsize=8)
 
     for (step, source, target), count in transition_counts.items():
@@ -393,11 +393,11 @@ def _plot_lineage_alluvial(
         _, y1, h1 = src
         _, y2, h2 = tgt
         ax.plot(
-            [step + 0.15, step + 0.85],
+            [step + 0.12, step + 0.88],
             [y1 + h1 / 2, y2 + h2 / 2],
             color="#888888",
             alpha=min(0.8, 0.3 + 0.5 * count / max_total),
-            linewidth=1.0,
+            linewidth=0.9,
         )
 
     fig.suptitle("Mutation lineage (alluvial)")
@@ -438,7 +438,7 @@ def _plot_mutation_persistence_heatmap(
             else:
                 data[row, col] = counts_by_depth.get(depth, {}).get(mutation, 0)
 
-    fig, ax = plt.subplots(figsize=(1.2 * max_depth, 0.35 * len(top_mutations) + 2))
+    fig, ax = plt.subplots(figsize=(1.0 * max_depth + 1.5, 0.32 * len(top_mutations) + 2))
     im = ax.imshow(data, aspect="auto", interpolation="nearest", cmap="viridis")
     ax.set_yticks(np.arange(len(top_mutations)))
     ax.set_yticklabels(top_mutations, fontsize=7)
@@ -449,7 +449,7 @@ def _plot_mutation_persistence_heatmap(
         "Mutation persistence heatmap"
         + (" (mean score)" if score_column else " (frequency)")
     )
-    fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "mutation_persistence_heatmap.png"))
     plt.close(fig)
@@ -505,7 +505,7 @@ def _plot_mutation_cooccurrence_networks(
         ]
         edges = sorted(edges, key=lambda item: item[1], reverse=True)[:max_edges]
 
-        fig, ax = plt.subplots(figsize=(7, 7))
+        fig, ax = plt.subplots(figsize=(6.2, 6.2))
         ax.axis("off")
 
         max_count = max(mutation_counts[m] for m in top_mutations)
@@ -524,13 +524,13 @@ def _plot_mutation_cooccurrence_networks(
                 [x1, x2],
                 [y1, y2],
                 color="#888888",
-                linewidth=0.5 + 2.5 * count / max_count,
-                alpha=0.6,
+                linewidth=0.5 + 2.0 * count / max_count,
+                alpha=0.55,
             )
 
         for mutation in top_mutations:
             x, y = positions[mutation]
-            size = 200 + 600 * mutation_counts[mutation] / max_count
+            size = 180 + 520 * mutation_counts[mutation] / max_count
             color = "#4c78a8"
             if score_column:
                 scores = mutation_scores.get(mutation, [])
