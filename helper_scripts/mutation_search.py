@@ -615,6 +615,3 @@ def recursive_mutation_search(
 
     _plot_mutation_distributions(results, chain_lengths, plot_dir)
     return results
-
-
-__all__ = ["recursive_mutation_search", "load_model_from_config"]
