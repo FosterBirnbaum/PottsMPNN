@@ -14,6 +14,7 @@ from matplotlib.collections import LineCollection
 from collections import defaultdict
 import omegaconf
 import itertools
+from tqdm import tqdm
 from Bio.PDB import PDBParser, PDBIO
 from Bio.Data.IUPACData import protein_letters_1to3
 import etab_utils as etab_utils
@@ -822,7 +823,7 @@ def get_etab(model, pdb_data, cfg, partition):
     etab = torch.nn.functional.pad(etab, pad, "constant", 0) # Add padding to account for 'X' and '-' tokens
     return etab, E_idx, wt_seq
 
-def score_seqs(model, cfg, pdb_data, nrgs, seqs, partition=None):
+def score_seqs(model, cfg, pdb_data, nrgs, seqs, partition=None, track_progress=False):
     """
     Score sequences using the energy table.
 
@@ -840,6 +841,8 @@ def score_seqs(model, cfg, pdb_data, nrgs, seqs, partition=None):
         Mutant sequence information
     partition : list (optional, default None)
         list of chains to analyze
+    track_progress : bool (optional, default False)
+        If True, display a progress bar over batches.
     
     Returns
     -------
@@ -867,7 +870,10 @@ def score_seqs(model, cfg, pdb_data, nrgs, seqs, partition=None):
     
     # Calculate energies
     scores, scored_seqs, reference_scores = [], [], []
-    for batch in range(0, nrgs.shape[1], batch_size):
+    batch_iter = range(0, nrgs.shape[1], batch_size)
+    if track_progress:
+        batch_iter = tqdm(batch_iter, desc="Scoring batches")
+    for batch in batch_iter:
         batch_scores, batch_seqs, batch_refs = etab_utils.calc_eners(etab, E_idx, seqs[:,batch:batch+batch_size], nrgs[:,batch:batch+batch_size], filter=cfg.inference.filter)
         scores.append(batch_scores)
         scored_seqs.append(batch_seqs)
