@@ -701,8 +701,8 @@ def recursive_mutation_search(
                 pareto_flags = _pareto_front(stability_scores, binding_scores)
                 data["pareto_front"] = [bool(pareto_flags[idx]) for idx in kept_indices]
 
-        results[depth] = pd.DataFrame(data)
-        current = kept
+    results[depth] = pd.DataFrame(data)
+    current = kept
 
     _plot_mutation_distributions(results, chain_lengths, plot_dir)
     _plot_pareto_fronts(results, plot_dir)
