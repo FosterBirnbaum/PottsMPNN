@@ -555,6 +555,7 @@ def recursive_mutation_search(
     results: Dict[int, pd.DataFrame] = {}
 
     for depth in range(1, max_mutations + 1):
+        print(f"Scoring mutations at depth {depth}")
         generated: Dict[str, Candidate] = {}
         for candidate in current:
             for new_seq, new_mut in _sequence_mutations(
@@ -575,6 +576,7 @@ def recursive_mutation_search(
             continue
 
         sequences = list(generated.keys())
+        print(f"Scoring {len(sequences)} mutations.")
         scores, stability_scores, binding_scores = _score_sequences(
             model,
             cfg,
