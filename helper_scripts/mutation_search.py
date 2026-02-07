@@ -30,6 +30,7 @@ AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
 class Candidate:
     sequence: str
     mutations: Tuple[str, ...]
+    positions: Tuple[int, ...]
     score: Optional[float] = None
 
 
@@ -246,6 +247,349 @@ def _plot_mutation_distributions(
         plt.close(fig)
 
 
+def _parse_mutation_list(mutation_str: str) -> List[str]:
+    if not mutation_str:
+        return []
+    return [mutation for mutation in mutation_str.split(",") if mutation]
+
+
+def _aggregate_mutation_stats(
+    results: Dict[int, pd.DataFrame],
+    value_column: Optional[str],
+) -> Tuple[Dict[int, Dict[str, int]], Dict[int, Dict[str, float]]]:
+    counts_by_depth: Dict[int, Dict[str, int]] = {}
+    values_by_depth: Dict[int, Dict[str, float]] = {}
+
+    for depth, df in results.items():
+        counts: Dict[str, int] = {}
+        value_sums: Dict[str, float] = {}
+        value_counts: Dict[str, int] = {}
+        for _, row in df.iterrows():
+            mutations = _parse_mutation_list(row.get("mutations", ""))
+            if not mutations:
+                continue
+            value = None
+            if value_column and value_column in row and pd.notna(row[value_column]):
+                value = float(row[value_column])
+            for mutation in mutations:
+                counts[mutation] = counts.get(mutation, 0) + 1
+                if value is not None:
+                    value_sums[mutation] = value_sums.get(mutation, 0.0) + value
+                    value_counts[mutation] = value_counts.get(mutation, 0) + 1
+        counts_by_depth[depth] = counts
+        values_by_depth[depth] = {
+            mutation: value_sums[mutation] / value_counts[mutation]
+            for mutation in value_sums
+            if value_counts[mutation] > 0
+        }
+    return counts_by_depth, values_by_depth
+
+
+def _plot_lineage_alluvial(
+    results: Dict[int, pd.DataFrame],
+    output_dir: Optional[str],
+    top_n: int = 20,
+) -> None:
+    if not output_dir:
+        return
+    if not results:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+
+    max_depth = max(results.keys())
+    if max_depth < 2:
+        return
+
+    score_column = "score" if {"stability_score", "binding_score"}.issubset(
+        results[max_depth].columns
+    ) else None
+
+    step_counts: Dict[int, Dict[str, int]] = {}
+    step_scores: Dict[int, Dict[str, List[float]]] = {}
+    transition_counts: Dict[Tuple[int, str, str], int] = {}
+
+    for depth, df in results.items():
+        for _, row in df.iterrows():
+            mutations = _parse_mutation_list(row.get("mutations", ""))
+            if len(mutations) < 2:
+                continue
+            score = None
+            if score_column and score_column in row and pd.notna(row[score_column]):
+                score = float(row[score_column])
+            for step, mutation in enumerate(mutations, start=1):
+                step_counts.setdefault(step, {})
+                step_scores.setdefault(step, {})
+                step_counts[step][mutation] = step_counts[step].get(mutation, 0) + 1
+                if score is not None:
+                    step_scores[step].setdefault(mutation, []).append(score)
+                for step in range(1, len(mutations)):
+                    transition_counts[(step, mutations[step - 1], mutations[step])] = (
+                        transition_counts.get((step, mutations[step - 1], mutations[step]), 0) + 1
+                    )
+
+    step_nodes: Dict[int, List[str]] = {}
+    for step in range(1, max_depth + 1):
+        counts = step_counts.get(step, {})
+        top_mutations = sorted(counts, key=counts.get, reverse=True)[:top_n]
+        step_nodes[step] = top_mutations
+
+    fig, ax = plt.subplots(figsize=(2.5 * max_depth, 6.5))
+    ax.axis("off")
+
+    max_total = max(sum(step_counts.get(step, {}).get(m, 0) for m in step_nodes.get(step, []))
+                    for step in range(1, max_depth + 1))
+    if max_total == 0:
+        plt.close(fig)
+        return
+
+    score_min, score_max = 0.0, 1.0
+    if score_column:
+        all_scores = [
+            score
+            for scores in step_scores.values()
+            for score_list in scores.values()
+            for score in score_list
+        ]
+        if all_scores:
+            score_min = min(all_scores)
+            score_max = max(all_scores)
+
+    node_positions: Dict[Tuple[int, str], Tuple[float, float, float]] = {}
+    for step in range(1, max_depth + 1):
+        counts = step_counts.get(step, {})
+        nodes = step_nodes.get(step, [])
+        total = sum(counts.get(node, 0) for node in nodes)
+        if total == 0:
+            continue
+        y = 0.0
+        for node in nodes:
+            height = counts.get(node, 0) / max_total
+            node_positions[(step, node)] = (step, y, height)
+            y += height + 0.02
+
+    cmap = plt.get_cmap("coolwarm")
+    for (step, node), (x, y, height) in node_positions.items():
+        avg_score = None
+        if score_column:
+            scores = step_scores.get(step, {}).get(node, [])
+            if scores:
+                avg_score = sum(scores) / len(scores)
+        color = cmap(0.5)
+        if avg_score is not None:
+            if score_max == score_min:
+                color = cmap(0.5)
+            else:
+                color = cmap((avg_score - score_min) / (score_max - score_min))
+        ax.add_patch(plt.Rectangle((x - 0.15, y), 0.3, height, color=color, alpha=0.8))
+        ax.text(x, y + height / 2, node, ha="center", va="center", fontsize=8)
+
+    for (step, source, target), count in transition_counts.items():
+        if source not in step_nodes.get(step, []) or target not in step_nodes.get(step + 1, []):
+            continue
+        src = node_positions.get((step, source))
+        tgt = node_positions.get((step + 1, target))
+        if not src or not tgt:
+            continue
+        _, y1, h1 = src
+        _, y2, h2 = tgt
+        ax.plot(
+            [step + 0.15, step + 0.85],
+            [y1 + h1 / 2, y2 + h2 / 2],
+            color="#888888",
+            alpha=min(0.8, 0.3 + 0.5 * count / max_total),
+            linewidth=1.0,
+        )
+
+    fig.suptitle("Mutation lineage (alluvial)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, "mutation_lineage_alluvial.png"))
+    plt.close(fig)
+
+
+def _plot_mutation_persistence_heatmap(
+    results: Dict[int, pd.DataFrame],
+    output_dir: Optional[str],
+    top_n: int = 50,
+) -> None:
+    if not output_dir or not results:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+
+    max_depth = max(results.keys())
+    score_column = "score" if {"stability_score", "binding_score"}.issubset(
+        results[max_depth].columns
+    ) else None
+
+    counts_by_depth, values_by_depth = _aggregate_mutation_stats(results, score_column)
+    total_counts: Dict[str, int] = {}
+    for counts in counts_by_depth.values():
+        for mutation, count in counts.items():
+            total_counts[mutation] = total_counts.get(mutation, 0) + count
+
+    top_mutations = sorted(total_counts, key=total_counts.get, reverse=True)[:top_n]
+    if not top_mutations:
+        return
+
+    data = np.zeros((len(top_mutations), max_depth))
+    for col, depth in enumerate(range(1, max_depth + 1)):
+        for row, mutation in enumerate(top_mutations):
+            if score_column:
+                data[row, col] = values_by_depth.get(depth, {}).get(mutation, np.nan)
+            else:
+                data[row, col] = counts_by_depth.get(depth, {}).get(mutation, 0)
+
+    fig, ax = plt.subplots(figsize=(1.2 * max_depth, 0.35 * len(top_mutations) + 2))
+    im = ax.imshow(data, aspect="auto", interpolation="nearest", cmap="viridis")
+    ax.set_yticks(np.arange(len(top_mutations)))
+    ax.set_yticklabels(top_mutations, fontsize=7)
+    ax.set_xticks(np.arange(max_depth))
+    ax.set_xticklabels([str(depth) for depth in range(1, max_depth + 1)])
+    ax.set_xlabel("Depth")
+    ax.set_title(
+        "Mutation persistence heatmap"
+        + (" (mean score)" if score_column else " (frequency)")
+    )
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, "mutation_persistence_heatmap.png"))
+    plt.close(fig)
+
+
+def _plot_mutation_cooccurrence_networks(
+    results: Dict[int, pd.DataFrame],
+    output_dir: Optional[str],
+    top_n: int = 25,
+    max_edges: int = 200,
+) -> None:
+    if not output_dir or not results:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+
+    for depth, df in results.items():
+        mutation_counts: Dict[str, int] = {}
+        mutation_scores: Dict[str, List[float]] = {}
+        cooccurrence_counts: Dict[Tuple[str, str], int] = {}
+        score_column = "score" if {"stability_score", "binding_score"}.issubset(
+            df.columns
+        ) else None
+
+        for _, row in df.iterrows():
+            mutations = _parse_mutation_list(row.get("mutations", ""))
+            if len(mutations) < 2:
+                continue
+            score = None
+            if score_column and score_column in row and pd.notna(row[score_column]):
+                score = float(row[score_column])
+            for mutation in mutations:
+                mutation_counts[mutation] = mutation_counts.get(mutation, 0) + 1
+                if score is not None:
+                    mutation_scores.setdefault(mutation, []).append(score)
+            for i in range(len(mutations)):
+                for j in range(i + 1, len(mutations)):
+                    pair = tuple(sorted((mutations[i], mutations[j])))
+                    cooccurrence_counts[pair] = cooccurrence_counts.get(pair, 0) + 1
+
+        top_mutations = sorted(mutation_counts, key=mutation_counts.get, reverse=True)[:top_n]
+        if len(top_mutations) < 2:
+            continue
+        positions = {}
+        angle_step = 2 * np.pi / len(top_mutations)
+        for idx, mutation in enumerate(top_mutations):
+            angle = idx * angle_step
+            positions[mutation] = (np.cos(angle), np.sin(angle))
+
+        edges = [
+            (pair, count)
+            for pair, count in cooccurrence_counts.items()
+            if pair[0] in top_mutations and pair[1] in top_mutations
+        ]
+        edges = sorted(edges, key=lambda item: item[1], reverse=True)[:max_edges]
+
+        fig, ax = plt.subplots(figsize=(7, 7))
+        ax.axis("off")
+
+        max_count = max(mutation_counts[m] for m in top_mutations)
+        cmap = plt.get_cmap("coolwarm")
+        score_min, score_max = 0.0, 1.0
+        if score_column:
+            all_scores = [score for scores in mutation_scores.values() for score in scores]
+            if all_scores:
+                score_min = min(all_scores)
+                score_max = max(all_scores)
+
+        for (m1, m2), count in edges:
+            x1, y1 = positions[m1]
+            x2, y2 = positions[m2]
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color="#888888",
+                linewidth=0.5 + 2.5 * count / max_count,
+                alpha=0.6,
+            )
+
+        for mutation in top_mutations:
+            x, y = positions[mutation]
+            size = 200 + 600 * mutation_counts[mutation] / max_count
+            color = "#4c78a8"
+            if score_column:
+                scores = mutation_scores.get(mutation, [])
+                if scores:
+                    avg_score = sum(scores) / len(scores)
+                    if score_max == score_min:
+                        color = cmap(0.5)
+                    else:
+                        color = cmap((avg_score - score_min) / (score_max - score_min))
+            ax.scatter([x], [y], s=size, color=color, edgecolor="black", linewidth=0.5)
+            ax.text(x, y, mutation, ha="center", va="center", fontsize=7)
+
+        ax.set_title(f"Mutation co-occurrence (depth {depth})")
+        fig.tight_layout()
+        fig.savefig(os.path.join(output_dir, f"mutation_cooccurrence_depth_{depth}.png"))
+        plt.close(fig)
+
+
+def _plot_pareto_fronts(
+    results: Dict[int, pd.DataFrame],
+    output_dir: Optional[str],
+) -> None:
+    if not output_dir:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+
+    for depth, df in results.items():
+        if df.empty or "pareto_front" not in df.columns:
+            continue
+        if not {"stability_score", "binding_score"}.issubset(df.columns):
+            continue
+
+        pareto_mask = df["pareto_front"].fillna(False).to_numpy(dtype=bool)
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        ax.scatter(
+            df["stability_score"],
+            df["binding_score"],
+            color="#4c78a8",
+            alpha=0.6,
+            label="Candidates",
+        )
+        if pareto_mask.any():
+            ax.scatter(
+                df.loc[pareto_mask, "stability_score"],
+                df.loc[pareto_mask, "binding_score"],
+                color="#f58518",
+                edgecolor="black",
+                linewidth=0.6,
+                label="Pareto front",
+            )
+        ax.set_title(f"Pareto front (depth {depth})")
+        ax.set_xlabel("Stability score")
+        ax.set_ylabel("Binding score")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(os.path.join(output_dir, f"pareto_front_depth_{depth}.png"))
+        plt.close(fig)
+
+
 def _format_mutation(chain: str, pos: int, wt: str, mut: str) -> str:
     return f"{chain}:{wt}{pos}{mut}"
 
@@ -256,9 +600,11 @@ def _sequence_mutations(
     allowed_by_pos: Dict[int, List[str]],
     allowed_from: Optional[Iterable[str]] = None,
     allowed_to: Optional[Iterable[str]] = None,
-) -> List[Tuple[str, Tuple[str, ...]]]:
+    disallow_positions: Optional[Iterable[int]] = None,
+) -> List[Tuple[str, Tuple[str, ...], int]]:
     allowed_from_set = set(allowed_from or AMINO_ACIDS)
     allowed_to_set = set(allowed_to or AMINO_ACIDS)
+    disallow_positions_set = set(disallow_positions or [])
     chain_order = list(chain_lengths.keys())
     chain_offsets = {}
     offset = 0
@@ -273,6 +619,8 @@ def _sequence_mutations(
             global_pos = start + local_pos - 1
             if global_pos not in allowed_by_pos:
                 continue
+            if global_pos in disallow_positions_set:
+                continue
             wt = sequence[global_pos]
             if wt not in allowed_from_set:
                 continue
@@ -282,7 +630,7 @@ def _sequence_mutations(
                     continue
                 new_seq = sequence[:global_pos] + mut + sequence[global_pos + 1 :]
                 mutation = _format_mutation(chain, local_pos, wt, mut)
-                mutants.append((new_seq, (mutation,)))
+                mutants.append((new_seq, (mutation,), global_pos))
     return mutants
 
 
@@ -459,6 +807,10 @@ def recursive_mutation_search(
     rrf_k: int = 60,
     show_pareto_front: bool = False,
     plot_dir: Optional[str] = None,
+    lineage_top_n: int = 20,
+    heatmap_top_n: int = 50,
+    cooccurrence_top_n: int = 25,
+    cooccurrence_max_edges: int = 200,
     allowed_from_aas: Optional[Iterable[str]] = None,
     allowed_to_aas: Optional[Iterable[str]] = None,
 ) -> Dict[int, pd.DataFrame]:
@@ -491,6 +843,14 @@ def recursive_mutation_search(
         If True and energy_mode is "both", include a Pareto front indicator column.
     plot_dir : str, optional
         If provided, save mutation distribution plots to this directory.
+    lineage_top_n : int
+        Top-N mutations to include per step in the alluvial lineage plot.
+    heatmap_top_n : int
+        Top-N mutations to include in the persistence heatmap.
+    cooccurrence_top_n : int
+        Top-N mutations to include in co-occurrence network plots.
+    cooccurrence_max_edges : int
+        Maximum number of edges to draw in co-occurrence network plots.
     allowed_from_aas : iterable, optional
         Amino acids that are allowed to be mutated from (wildtype filter).
     allowed_to_aas : iterable, optional
@@ -501,6 +861,7 @@ def recursive_mutation_search(
     dict
         Mapping of mutation count to a DataFrame with columns:
         sequence, mutations, score.
+        Mutations at each depth are enforced to occur at distinct positions.
     """
     if max_mutations < 1:
         raise ValueError("max_mutations must be >= 1.")
@@ -551,24 +912,29 @@ def recursive_mutation_search(
     normalized_from = _normalize_amino_acids(allowed_from_aas)
     normalized_to = _normalize_amino_acids(allowed_to_aas)
 
-    current = [Candidate(sequence=pdb_data_list[0][0]["seq"], mutations=tuple())]
+    current = [Candidate(sequence=pdb_data_list[0][0]["seq"], mutations=tuple(), positions=tuple())]
     results: Dict[int, pd.DataFrame] = {}
 
     for depth in range(1, max_mutations + 1):
         print(f"Scoring mutations at depth {depth}")
         generated: Dict[str, Candidate] = {}
         for candidate in current:
-            for new_seq, new_mut in _sequence_mutations(
+            for new_seq, new_mut, global_pos in _sequence_mutations(
                 candidate.sequence,
                 chain_lengths,
                 allowed_by_pos,
                 allowed_from=normalized_from,
                 allowed_to=normalized_to,
+                disallow_positions=candidate.positions,
             ):
                 mutations = candidate.mutations + new_mut
                 if new_seq in generated:
                     continue
-                generated[new_seq] = Candidate(sequence=new_seq, mutations=mutations)
+                generated[new_seq] = Candidate(
+                    sequence=new_seq,
+                    mutations=mutations,
+                    positions=candidate.positions + (global_pos,),
+                )
 
         if not generated:
             results[depth] = pd.DataFrame(columns=["sequence", "mutations", "score"])
@@ -614,4 +980,13 @@ def recursive_mutation_search(
         current = kept
 
     _plot_mutation_distributions(results, chain_lengths, plot_dir)
+    _plot_pareto_fronts(results, plot_dir)
+    _plot_lineage_alluvial(results, plot_dir, top_n=lineage_top_n)
+    _plot_mutation_persistence_heatmap(results, plot_dir, top_n=heatmap_top_n)
+    _plot_mutation_cooccurrence_networks(
+        results,
+        plot_dir,
+        top_n=cooccurrence_top_n,
+        max_edges=cooccurrence_max_edges,
+    )
     return results
