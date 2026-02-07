@@ -21,7 +21,7 @@ from matplotlib.ticker import MaxNLocator
 from omegaconf import OmegaConf
 
 from potts_mpnn_utils import PottsMPNN, parse_PDB
-from run_utils import score_seqs
+from run_utils import chain_to_partition_map, inter_partition_contact_mask, score_seqs
 
 AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
 
@@ -100,6 +100,48 @@ def _partition_sequences(
         _partition_sequence(sequence, chain_order, chain_lengths, partition)
         for sequence in sequences
     ]
+
+
+def _concat_ca_positions(pdb_entry: dict) -> torch.Tensor:
+    coords = []
+    for chain in pdb_entry["chain_order"]:
+        chain_coords = pdb_entry[f"coords_chain_{chain}"][f"CA_chain_{chain}"]
+        coords.append(np.array(chain_coords, dtype=np.float32))
+    ca_pos = np.concatenate(coords, axis=0)
+    return torch.from_numpy(ca_pos).unsqueeze(0)
+
+
+def _chain_encoding(chain_lengths: Dict[str, int], chain_order: Sequence[str]) -> torch.Tensor:
+    encoding = []
+    for idx, chain in enumerate(chain_order, start=1):
+        encoding.extend([idx] * chain_lengths[chain])
+    return torch.tensor([encoding], dtype=torch.long)
+
+
+def _interface_mask(
+    pdb_entry: dict,
+    chain_lengths: Dict[str, int],
+    binding_partitions: List[List[str]],
+    binding_energy_cutoff: float,
+) -> np.ndarray:
+    ca_pos = _concat_ca_positions(pdb_entry)
+    chain_order = pdb_entry["chain_order"]
+    chain_encoding_all = _chain_encoding(chain_lengths, chain_order).to(device=ca_pos.device)
+    partition_index = chain_to_partition_map(chain_encoding_all, chain_order, binding_partitions)
+    inter_mask = inter_partition_contact_mask(ca_pos, partition_index, binding_energy_cutoff)
+    return inter_mask.squeeze(0).cpu().numpy().astype(bool)
+
+
+def _mask_sequence_to_interface(
+    sequence: str,
+    wt_sequence: str,
+    interface_mask: np.ndarray,
+) -> str:
+    return "".join(
+        seq_res if interface_mask[idx] else wt_sequence[idx]
+        for idx, seq_res in enumerate(sequence)
+    )
+
 
 def _global_position_map(chain_lengths: Dict[str, int]) -> Dict[Tuple[str, int], int]:
     mapping = {}
@@ -251,7 +293,9 @@ def _score_sequences(
     sequences: Sequence[str],
     binding_partitions_list: Sequence[List[List[str]]],
     energy_mode: str,
-) -> np.ndarray:
+    binding_energy_cutoff: Optional[float] = None,
+    rrf_k: int = 60,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     cfg.inference.ddG = True
     cfg.inference.mean_norm = False
     cfg.inference.filter = False
@@ -259,47 +303,137 @@ def _score_sequences(
         raise ValueError("pdb_data_list and binding_partitions_list must be the same length.")
 
     all_scores = []
+    all_stability = []
+    all_binding = []
     for pdb_data, binding_partitions in zip(pdb_data_list, binding_partitions_list):
-        chain_order = pdb_data[0]["chain_order"]
-        chain_lengths = _chain_lengths(pdb_data[0])
+        pdb_entry = pdb_data[0]
+        chain_order = pdb_entry["chain_order"]
+        chain_lengths = _chain_lengths(pdb_entry)
+        wt_sequence = pdb_entry["seq"]
         scores, _, _ = score_seqs(
             model, cfg, pdb_data, [0.0] * len(sequences), list(sequences), track_progress=True
         )
         scores = scores.squeeze(0)
 
+        stability_scores = scores.cpu().numpy()
         if energy_mode == "stability":
-            all_scores.append(scores.cpu().numpy())
+            all_scores.append(stability_scores)
+            all_stability.append(stability_scores)
             continue
 
         if not binding_partitions:
             raise ValueError("Binding energy scoring requires binding_energy_json partitions.")
 
+        interface_mask = None
+        if binding_energy_cutoff is not None:
+            interface_mask = _interface_mask(
+                pdb_entry, chain_lengths, binding_partitions, binding_energy_cutoff
+            )
+            binding_sequences = [
+                _mask_sequence_to_interface(seq, wt_sequence, interface_mask)
+                for seq in sequences
+            ]
+        else:
+            binding_sequences = list(sequences)
+
+        bound_scores = torch.zeros_like(scores)
+        bound_indices = [idx for idx, seq in enumerate(binding_sequences) if seq != wt_sequence]
+        if bound_indices:
+            bound_subset = [binding_sequences[idx] for idx in bound_indices]
+            bound_subset_scores, _, _ = score_seqs(
+                model,
+                cfg,
+                pdb_data,
+                [0.0] * len(bound_subset),
+                bound_subset,
+                track_progress=True,
+            )
+            bound_scores[bound_indices] = bound_subset_scores.squeeze(0)
+
         unbound_scores = torch.zeros_like(scores)
         for partition in binding_partitions:
-            partition_sequences = _partition_sequences(
-                sequences, chain_order, chain_lengths, partition
+            wt_partition_seq = _partition_sequence(
+                wt_sequence, chain_order, chain_lengths, partition
             )
+            partition_sequences = _partition_sequences(
+                binding_sequences, chain_order, chain_lengths, partition
+            )
+            partition_indices = [
+                idx
+                for idx, seq in enumerate(partition_sequences)
+                if seq != wt_partition_seq
+            ]
+            if not partition_indices:
+                continue
+            partition_subset = [partition_sequences[idx] for idx in partition_indices]
             partition_scores, _, _ = score_seqs(
                 model,
                 cfg,
                 pdb_data,
-                [0.0] * len(sequences),
-                partition_sequences,
+                [0.0] * len(partition_subset),
+                partition_subset,
                 partition=partition,
                 track_progress=True,
             )
-            unbound_scores = unbound_scores + partition_scores.squeeze(0)
+            unbound_scores[partition_indices] = (
+                unbound_scores[partition_indices] + partition_scores.squeeze(0)
+            )
 
-        binding_scores = scores - unbound_scores
+        binding_scores = bound_scores - unbound_scores
+        binding_scores_np = binding_scores.cpu().numpy()
         if energy_mode == "binding":
-            all_scores.append(binding_scores.cpu().numpy())
+            all_scores.append(binding_scores_np)
+            all_binding.append(binding_scores_np)
         elif energy_mode == "both":
-            combined = scores + binding_scores
-            all_scores.append(combined.cpu().numpy())
+            stability_ranks = _rank_scores(stability_scores)
+            binding_ranks = _rank_scores(binding_scores_np)
+            rrf_scores = _rrf_scores(stability_ranks, binding_ranks, rrf_k)
+            all_scores.append(-rrf_scores)
+            all_stability.append(stability_scores)
+            all_binding.append(binding_scores_np)
         else:
             raise ValueError("energy_mode must be one of: 'stability', 'binding', 'both'.")
 
-    return np.mean(np.stack(all_scores, axis=0), axis=0)
+    return (
+        np.mean(np.stack(all_scores, axis=0), axis=0),
+        np.mean(np.stack(all_stability, axis=0), axis=0) if all_stability else None,
+        np.mean(np.stack(all_binding, axis=0), axis=0) if all_binding else None,
+    )
+
+
+def _rank_scores(scores: np.ndarray) -> np.ndarray:
+    order = np.argsort(scores)
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(1, len(scores) + 1)
+    return ranks
+
+
+def _rrf_scores(stability_ranks: np.ndarray, binding_ranks: np.ndarray, rrf_k: int) -> np.ndarray:
+    if rrf_k <= 0:
+        raise ValueError("rrf_k must be a positive integer.")
+    return (1.0 / (rrf_k + stability_ranks)) + (1.0 / (rrf_k + binding_ranks))
+
+
+def _pareto_front(stability_scores: np.ndarray, binding_scores: np.ndarray) -> np.ndarray:
+    n = len(stability_scores)
+    front = np.ones(n, dtype=bool)
+    for i in range(n):
+        if not front[i]:
+            continue
+        for j in range(n):
+            if i == j or not front[i]:
+                continue
+            if (
+                stability_scores[j] <= stability_scores[i]
+                and binding_scores[j] <= binding_scores[i]
+                and (
+                    stability_scores[j] < stability_scores[i]
+                    or binding_scores[j] < binding_scores[i]
+                )
+            ):
+                front[i] = False
+                break
+    return front
 
 
 def _normalize_amino_acids(amino_acids: Optional[Iterable[str]]) -> Optional[List[str]]:
@@ -320,7 +454,10 @@ def recursive_mutation_search(
     allowed_mutations: Optional[Dict[str, Dict[int, Optional[Iterable[str]]]]] = None,
     disallowed_chains: Optional[Iterable[str]] = None,
     binding_energy_json: Optional[str] = None,
+    binding_energy_cutoff: Optional[float] = None,
     energy_mode: str = "stability",
+    rrf_k: int = 60,
+    show_pareto_front: bool = False,
     plot_dir: Optional[str] = None,
     allowed_from_aas: Optional[Iterable[str]] = None,
     allowed_to_aas: Optional[Iterable[str]] = None,
@@ -344,8 +481,14 @@ def recursive_mutation_search(
         Chains to disallow from mutation entirely (e.g., ["B", "C"]).
     binding_energy_json : str, optional
         Path to JSON describing binding partitions for energy calculation.
+    binding_energy_cutoff : float, optional
+        Cα distance cutoff (Angstroms) for interface residues used in binding energy.
     energy_mode : str
         "stability", "binding", or "both". "both" is stability + binding.
+    rrf_k : int
+        Reciprocal rank fusion constant used when energy_mode is "both".
+    show_pareto_front : bool
+        If True and energy_mode is "both", include a Pareto front indicator column.
     plot_dir : str, optional
         If provided, save mutation distribution plots to this directory.
     allowed_from_aas : iterable, optional
@@ -363,6 +506,12 @@ def recursive_mutation_search(
         raise ValueError("max_mutations must be >= 1.")
     if not (0.0 < top_percent <= 100.0):
         raise ValueError("top_percent must be within (0, 100].")
+    if binding_energy_cutoff is not None and binding_energy_cutoff <= 0:
+        raise ValueError("binding_energy_cutoff must be a positive distance in Angstroms.")
+    if rrf_k <= 0:
+        raise ValueError("rrf_k must be a positive integer.")
+    if show_pareto_front and energy_mode != "both":
+        raise ValueError("show_pareto_front requires energy_mode='both'.")
 
     model, cfg = load_model_from_config(cfg_path)
     pdb_path_list = [pdb_paths] if isinstance(pdb_paths, str) else list(pdb_paths)
@@ -387,6 +536,18 @@ def recursive_mutation_search(
     binding_partitions_list = [
         _parse_binding_partitions(binding_energy_json, pdb_name) for pdb_name in pdb_names
     ]
+    if binding_energy_cutoff is not None and energy_mode != "stability":
+        if not binding_partitions_list or not binding_partitions_list[0]:
+            raise ValueError("Binding energy cutoff requires binding_energy_json partitions.")
+        interface_mask = _interface_mask(
+            pdb_data_list[0][0],
+            chain_lengths,
+            binding_partitions_list[0],
+            binding_energy_cutoff,
+        )
+        allowed_by_pos = {
+            pos: residues for pos, residues in allowed_by_pos.items() if interface_mask[pos]
+        }
     normalized_from = _normalize_amino_acids(allowed_from_aas)
     normalized_to = _normalize_amino_acids(allowed_to_aas)
 
@@ -414,8 +575,15 @@ def recursive_mutation_search(
             continue
 
         sequences = list(generated.keys())
-        scores = _score_sequences(
-            model, cfg, pdb_data_list, sequences, binding_partitions_list, energy_mode
+        scores, stability_scores, binding_scores = _score_sequences(
+            model,
+            cfg,
+            pdb_data_list,
+            sequences,
+            binding_partitions_list,
+            energy_mode,
+            binding_energy_cutoff=binding_energy_cutoff,
+            rrf_k=rrf_k,
         )
         for seq, score in zip(sequences, scores):
             generated[seq].score = float(score)
@@ -424,13 +592,23 @@ def recursive_mutation_search(
         keep_n = max(1, ceil(len(ranked) * (top_percent / 100.0)))
         kept = ranked[:keep_n]
 
-        results[depth] = pd.DataFrame(
-            {
-                "sequence": [c.sequence for c in kept],
-                "mutations": [",".join(c.mutations) for c in kept],
-                "score": [c.score for c in kept],
-            }
-        )
+        data = {
+            "sequence": [c.sequence for c in kept],
+            "mutations": [",".join(c.mutations) for c in kept],
+            "score": [c.score for c in kept],
+        }
+        if energy_mode == "both":
+            if stability_scores is None or binding_scores is None:
+                raise ValueError("Joint optimization requires stability and binding scores.")
+            sequence_indices = {seq: idx for idx, seq in enumerate(sequences)}
+            kept_indices = [sequence_indices[c.sequence] for c in kept]
+            data["stability_score"] = [float(stability_scores[idx]) for idx in kept_indices]
+            data["binding_score"] = [float(binding_scores[idx]) for idx in kept_indices]
+            if show_pareto_front:
+                pareto_flags = _pareto_front(stability_scores, binding_scores)
+                data["pareto_front"] = [bool(pareto_flags[idx]) for idx in kept_indices]
+
+        results[depth] = pd.DataFrame(data)
         current = kept
 
     _plot_mutation_distributions(results, chain_lengths, plot_dir)
