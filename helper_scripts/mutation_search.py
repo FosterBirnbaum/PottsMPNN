@@ -507,6 +507,9 @@ def recursive_mutation_search(
     rrf_k: int = 60,
     show_pareto_front: bool = False,
     plot_dir: Optional[str] = None,
+    top_percent_decay_base: float = 10.0,
+    max_keep_per_depth: int = 1_000_000,
+    per_position_quota: Optional[int] = None,
     allowed_from_aas: Optional[Iterable[str]] = None,
     allowed_to_aas: Optional[Iterable[str]] = None,
 ) -> Dict[int, pd.DataFrame]:
@@ -522,6 +525,14 @@ def recursive_mutation_search(
         Maximum number of mutations to explore.
     top_percent : float
         Percentage (0-100) of candidates to keep at each depth.
+    top_percent_decay_base : float
+        Base for exponential decay applied to the top_percent as depth increases.
+        A value of 10.0 keeps depth-1 at top_percent, depth-2 at top_percent/10,
+        depth-3 at top_percent/100, etc. Set to 1.0 to disable decay.
+    max_keep_per_depth : int
+        Hard cap on the number of candidates to keep per depth (after decay).
+    per_position_quota : int, optional
+        Maximum number of kept candidates that may include any individual position.
     allowed_mutations : dict, optional
         Mapping of chain -> {position (1-indexed): [allowed residues] or None}.
         If None, all positions and canonical residues are allowed.
@@ -561,6 +572,12 @@ def recursive_mutation_search(
         raise ValueError("rrf_k must be a positive integer.")
     if show_pareto_front and energy_mode != "both":
         raise ValueError("show_pareto_front requires energy_mode='both'.")
+    if top_percent_decay_base <= 0:
+        raise ValueError("top_percent_decay_base must be a positive number.")
+    if max_keep_per_depth < 1:
+        raise ValueError("max_keep_per_depth must be >= 1.")
+    if per_position_quota is not None and per_position_quota < 1:
+        raise ValueError("per_position_quota must be >= 1 when provided.")
 
     model, cfg = load_model_from_config(cfg_path)
     pdb_path_list = [pdb_paths] if isinstance(pdb_paths, str) else list(pdb_paths)
@@ -647,8 +664,27 @@ def recursive_mutation_search(
             generated[seq].score = float(score)
 
         ranked = sorted(generated.values(), key=lambda c: c.score)
-        keep_n = max(1, ceil(len(ranked) * (top_percent / 100.0)))
-        kept = ranked[:keep_n]
+        effective_top_percent = top_percent / (top_percent_decay_base ** (depth - 1))
+        keep_n = max(1, ceil(len(ranked) * (effective_top_percent / 100.0)))
+        keep_n = min(keep_n, max_keep_per_depth)
+        if per_position_quota is None:
+            kept = ranked[:keep_n]
+        else:
+            kept = []
+            position_counts: Dict[int, int] = {}
+            for candidate in ranked:
+                if len(kept) >= keep_n:
+                    break
+                if any(
+                    position_counts.get(pos, 0) >= per_position_quota
+                    for pos in candidate.positions
+                ):
+                    continue
+                for pos in candidate.positions:
+                    position_counts[pos] = position_counts.get(pos, 0) + 1
+                kept.append(candidate)
+
+        print(f"Kept {len(kept)} sequences.")
 
         data = {
             "sequence": [c.sequence for c in kept],
@@ -667,8 +703,8 @@ def recursive_mutation_search(
                 pareto_flags = _pareto_front(stability_scores, binding_scores)
                 data["pareto_front"] = [bool(pareto_flags[idx]) for idx in kept_indices]
 
-    results[depth] = pd.DataFrame(data)
-    current = kept
+        results[depth] = pd.DataFrame(data)
+        current = kept
 
     _plot_mutation_distributions(results, chain_lengths, plot_dir)
     _plot_pareto_fronts(results, plot_dir)
