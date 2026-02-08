@@ -24,6 +24,7 @@ from potts_mpnn_utils import PottsMPNN, parse_PDB
 from run_utils import chain_to_partition_map, inter_partition_contact_mask, score_seqs
 
 AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
+MAX_SEQS_PER_BATCH = 1_000_000
 
 
 @dataclass
@@ -334,6 +335,44 @@ def _sequence_mutations(
     return mutants
 
 
+def _score_seqs_batched(
+    model: PottsMPNN,
+    cfg: OmegaConf,
+    pdb_data: Sequence[dict],
+    sequences: Sequence[str],
+    *,
+    partition: Optional[Sequence[str]] = None,
+    track_progress: bool = False,
+    max_batch_size: int = MAX_SEQS_PER_BATCH,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if not sequences:
+        empty = torch.empty((1, 0), device=cfg.dev)
+        return empty, empty, empty
+
+    scores_list = []
+    seqs_list = []
+    refs_list = []
+    for idx in range(0, len(sequences), max_batch_size):
+        batch = sequences[idx : idx + max_batch_size]
+        batch_scores, batch_seqs, batch_refs = score_seqs(
+            model,
+            cfg,
+            pdb_data,
+            [0.0] * len(batch),
+            list(batch),
+            partition=partition,
+            track_progress=track_progress,
+        )
+        scores_list.append(batch_scores)
+        seqs_list.append(batch_seqs)
+        refs_list.append(batch_refs)
+
+    scores = torch.cat(scores_list, dim=1)
+    scored_seqs = torch.cat(seqs_list, dim=1)
+    reference_scores = torch.cat(refs_list, dim=1)
+    return scores, scored_seqs, reference_scores
+
+
 def _score_sequences(
     model: PottsMPNN,
     cfg: OmegaConf,
@@ -358,8 +397,8 @@ def _score_sequences(
         chain_order = pdb_entry["chain_order"]
         chain_lengths = _chain_lengths(pdb_entry)
         wt_sequence = pdb_entry["seq"]
-        scores, _, _ = score_seqs(
-            model, cfg, pdb_data, [0.0] * len(sequences), list(sequences), track_progress=True
+        scores, _, _ = _score_seqs_batched(
+            model, cfg, pdb_data, sequences, track_progress=True
         )
         scores = scores.squeeze(0)
 
@@ -388,11 +427,10 @@ def _score_sequences(
         bound_indices = [idx for idx, seq in enumerate(binding_sequences) if seq != wt_sequence]
         if bound_indices:
             bound_subset = [binding_sequences[idx] for idx in bound_indices]
-            bound_subset_scores, _, _ = score_seqs(
+            bound_subset_scores, _, _ = _score_seqs_batched(
                 model,
                 cfg,
                 pdb_data,
-                [0.0] * len(bound_subset),
                 bound_subset,
                 track_progress=True,
             )
@@ -414,11 +452,10 @@ def _score_sequences(
             if not partition_indices:
                 continue
             partition_subset = [partition_sequences[idx] for idx in partition_indices]
-            partition_scores, _, _ = score_seqs(
+            partition_scores, _, _ = _score_seqs_batched(
                 model,
                 cfg,
                 pdb_data,
-                [0.0] * len(partition_subset),
                 partition_subset,
                 partition=partition,
                 track_progress=True,
