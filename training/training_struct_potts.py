@@ -44,6 +44,7 @@ def load_esm_model(model_name, device):
         esm_model = model_factory()
         esm_model = esm_model.to(device)
         esm_model.eval()
+        esm_model.requires_grad_(False)
 
         esm_tokenizer = getattr(esm_model, "tokenizer", None)
         if esm_tokenizer is None:
@@ -149,6 +150,7 @@ def main(args):
         potts_consistency_loss,
         msa_similarity_loss,
         msa_similarity_loss_esm,
+        msa_similarity_loss_esmc,
         structure_consistency_loss,
         structure_fape_loss,
     )
@@ -239,6 +241,9 @@ def main(args):
         # ProteinMPNN uses this alphabet ordering for token IDs.
         model_alphabet = "ACDEFGHIKLMNPQRSTVWYX-"
         esm_token_map = build_esm_token_map(esm_vocab, model_alphabet)
+        esm_is_esmc = args.esm_model_name.startswith("esmc")
+    else:
+        esm_is_esmc = False
 
     optimizer = get_std_opt(model, args.hidden_dim, args.warmup_steps)
 
@@ -356,16 +361,28 @@ def main(args):
                             etab_geom, e_idx, etab_seq_dense, mask
                         )
                         if args.msa_similarity_loss_type == "esm":
-                            loss_msa = msa_similarity_loss_esm(
-                                log_probs,
-                                boltz2_feats["msa"],
-                                boltz2_feats["msa_mask"],
-                                mask,
-                                esm_model,
-                                esm_token_map,
-                                margin=args.msa_margin,
-                                gumbel_temperature=args.esm_gumbel_temperature,
-                            )
+                            if esm_is_esmc:
+                                loss_msa = msa_similarity_loss_esmc(
+                                    log_probs,
+                                    boltz2_feats["msa"],
+                                    boltz2_feats["msa_mask"],
+                                    mask,
+                                    esm_model,
+                                    esm_token_map,
+                                    margin=args.msa_margin,
+                                    gumbel_temperature=args.esm_gumbel_temperature,
+                                )
+                            else:
+                                loss_msa = msa_similarity_loss_esm(
+                                    log_probs,
+                                    boltz2_feats["msa"],
+                                    boltz2_feats["msa_mask"],
+                                    mask,
+                                    esm_model,
+                                    esm_token_map,
+                                    margin=args.msa_margin,
+                                    gumbel_temperature=args.esm_gumbel_temperature,
+                                )
                         else:
                             loss_msa = msa_similarity_loss(
                                 log_probs,
@@ -414,16 +431,28 @@ def main(args):
                         etab_geom, e_idx, etab_seq_dense, mask
                     )
                     if args.msa_similarity_loss_type == "esm":
-                        loss_msa = msa_similarity_loss_esm(
-                            log_probs,
-                            boltz2_feats["msa"],
-                            boltz2_feats["msa_mask"],
-                            mask,
-                            esm_model,
-                            esm_token_map,
-                            margin=args.msa_margin,
-                            gumbel_temperature=args.esm_gumbel_temperature,
-                        )
+                        if esm_is_esmc:
+                            loss_msa = msa_similarity_loss_esmc(
+                                log_probs,
+                                boltz2_feats["msa"],
+                                boltz2_feats["msa_mask"],
+                                mask,
+                                esm_model,
+                                esm_token_map,
+                                margin=args.msa_margin,
+                                gumbel_temperature=args.esm_gumbel_temperature,
+                            )
+                        else:
+                            loss_msa = msa_similarity_loss_esm(
+                                log_probs,
+                                boltz2_feats["msa"],
+                                boltz2_feats["msa_mask"],
+                                mask,
+                                esm_model,
+                                esm_token_map,
+                                margin=args.msa_margin,
+                                gumbel_temperature=args.esm_gumbel_temperature,
+                            )
                     else:
                         loss_msa = msa_similarity_loss(
                             log_probs,
