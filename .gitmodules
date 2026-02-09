@@ -1,0 +1,3 @@
+[submodule "boltz2"]
+	path = boltz2
+	url = https://github.com/jwohlwend/boltz.git
