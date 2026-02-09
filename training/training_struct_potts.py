@@ -153,6 +153,7 @@ def main(args):
         potts_consistency_loss,
         msa_similarity_loss,
         msa_similarity_loss_esm,
+        msa_similarity_loss_esmc,
         structure_consistency_loss,
         structure_fape_loss,
     )
@@ -243,6 +244,9 @@ def main(args):
         # ProteinMPNN uses this alphabet ordering for token IDs.
         model_alphabet = "ACDEFGHIKLMNPQRSTVWYX-"
         esm_token_map = build_esm_token_map(esm_vocab, model_alphabet)
+        esm_is_esmc = args.esm_model_name.startswith("esmc")
+    else:
+        esm_is_esmc = False
 
     optimizer = get_std_opt(model, args.hidden_dim, args.warmup_steps)
 
