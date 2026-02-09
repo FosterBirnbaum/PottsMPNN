@@ -557,7 +557,7 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--esm_model_name",
         type=str,
-        default="esm2_t33_650M_UR50D",
+        default="esmc_300m",
     )
     argparser.add_argument(
         "--esm_gumbel_temperature",
