@@ -44,6 +44,8 @@ def load_esm_model(model_name, device):
         esm_model = model_factory()
         esm_model = esm_model.to(device)
         esm_model.eval()
+        for param in esm_model.parameters():
+            param.requires_grad = False
 
         esm_tokenizer = getattr(esm_model, "tokenizer", None)
         if esm_tokenizer is None:
@@ -58,6 +60,8 @@ def load_esm_model(model_name, device):
     esm_model, esm_alphabet = esm.pretrained.load_model_and_alphabet(model_name)
     esm_model = esm_model.to(device)
     esm_model.eval()
+    for param in esm_model.parameters():
+        param.requires_grad = False
     return esm_model, esm_alphabet
 
 
@@ -365,6 +369,7 @@ def main(args):
                                 esm_token_map,
                                 margin=args.msa_margin,
                                 gumbel_temperature=args.esm_gumbel_temperature,
+                                pred_embed_mode=args.esm_pred_embed_mode,
                             )
                         else:
                             loss_msa = msa_similarity_loss(
@@ -423,6 +428,7 @@ def main(args):
                             esm_token_map,
                             margin=args.msa_margin,
                             gumbel_temperature=args.esm_gumbel_temperature,
+                            pred_embed_mode=args.esm_pred_embed_mode,
                         )
                     else:
                         loss_msa = msa_similarity_loss(
@@ -630,6 +636,12 @@ if __name__ == "__main__":
         "--esm_gumbel_temperature",
         type=float,
         default=1.0,
+    )
+    argparser.add_argument(
+        "--esm_pred_embed_mode",
+        type=str,
+        default="gumbel_st",
+        choices=["gumbel_st", "potts_weighted"],
     )
     argparser.add_argument(
         "--structure_loss_type",

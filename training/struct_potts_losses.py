@@ -68,11 +68,11 @@ def _esm_embedding_weight(esm_model):
     raise AttributeError("ESM model does not expose an embedding weight.")
 
 
-def _esm_token_embeddings(esm_model, one_hot_tokens, token_id_map):
-    """Convert one-hot tokens to ESM token embeddings via a token-id mapping."""
+def _esm_token_embeddings(esm_model, token_weights, token_id_map):
+    """Convert token weights to ESM token embeddings via a token-id mapping."""
     embed_weight = _esm_embedding_weight(esm_model)
     mapped_embed_weight = embed_weight[token_id_map]
-    return torch.einsum("blv,ve->ble", one_hot_tokens, mapped_embed_weight)
+    return torch.einsum("blv,ve->ble", token_weights, mapped_embed_weight)
 
 
 def _esm_token_embeddings_from_ids(esm_model, token_ids, token_id_map):
@@ -91,12 +91,13 @@ def msa_similarity_loss_esm(
     token_id_map,
     margin=0.0,
     gumbel_temperature=1.0,
+    pred_embed_mode="gumbel_st",
 ):
     """Contrastive ESM-embedding loss against MSA sequences.
 
-    Uses straight-through Gumbel-Softmax to produce one-hot predictions and
-    compares them to ESM token embeddings of the MSA. This is a lightweight
-    proxy for full ESM representations but keeps gradients flowing.
+    Uses either straight-through Gumbel-Softmax to produce token IDs or a
+    Potts-probability-weighted sum of ESM token embeddings. This is a
+    lightweight proxy for full ESM representations but keeps gradients flowing.
     """
     if esm_model is None:
         raise ValueError("msa_similarity_loss_esm requires a non-null esm_model.")
@@ -108,8 +109,17 @@ def msa_similarity_loss_esm(
     token_id_map = token_id_map.to(device)
 
     # Map model vocab tokens into ESM's token IDs via the provided lookup.
-    pred_one_hot = _gumbel_one_hot(log_probs, temperature=gumbel_temperature, hard=True)
-    pred_embed = _esm_token_embeddings(esm_model, pred_one_hot, token_id_map)
+    if pred_embed_mode == "gumbel_st":
+        pred_weights = _gumbel_one_hot(
+            log_probs, temperature=gumbel_temperature, hard=True
+        )
+    elif pred_embed_mode == "potts_weighted":
+        pred_weights = log_probs.exp()
+    else:
+        raise ValueError(
+            "pred_embed_mode must be one of ['gumbel_st', 'potts_weighted']."
+        )
+    pred_embed = _esm_token_embeddings(esm_model, pred_weights, token_id_map)
     msa_embed = _esm_token_embeddings_from_ids(esm_model, msa_tokens, token_id_map)
 
     # Normalize embeddings for cosine similarity.
