@@ -55,6 +55,14 @@ def _gumbel_one_hot(log_probs, temperature=1.0, hard=True):
     return F.gumbel_softmax(log_probs, tau=temperature, hard=hard, dim=-1)
 
 
+def _sample_potts_token_ids(log_probs, temperature=1.0):
+    """Sample discrete Potts token IDs from log-probabilities."""
+    if temperature is None or temperature <= 0:
+        return torch.argmax(log_probs, dim=-1)
+    one_hot = _gumbel_one_hot(log_probs, temperature=temperature, hard=True)
+    return one_hot.argmax(dim=-1)
+
+
 def _esm_embedding_weight(esm_model):
     for attr in ("embed_tokens", "token_embedder", "embedder"):
         module = getattr(esm_model, attr, None)
@@ -173,8 +181,9 @@ def msa_similarity_loss_esm(
     """Contrastive ESM-embedding loss against MSA sequences.
 
     Uses straight-through Gumbel-Softmax to produce one-hot predictions and
-    compares them to ESM token embeddings of the MSA. This is a lightweight
-    proxy for full ESM representations but keeps gradients flowing.
+    compares them to ESM token embeddings of the MSA. For ESMC models, this
+    path converts sampled Potts IDs into ESMC token IDs before calling
+    ``ESMC.forward``.
     """
     if esm_model is None:
         raise ValueError("msa_similarity_loss_esm requires a non-null esm_model.")
@@ -186,9 +195,22 @@ def msa_similarity_loss_esm(
     token_id_map = token_id_map.to(device)
 
     # Map model vocab tokens into ESM's token IDs via the provided lookup.
-    pred_one_hot = _gumbel_one_hot(log_probs, temperature=gumbel_temperature, hard=True)
-    pred_embed = _esm_token_embeddings(esm_model, pred_one_hot, token_id_map)
-    msa_embed = _esm_token_embeddings_from_ids(esm_model, msa_tokens, token_id_map)
+    if _is_esmc_model(esm_model):
+        pred_token_ids = _sample_potts_token_ids(
+            log_probs, temperature=gumbel_temperature
+        )
+        pred_embed = _esmc_forward_embeddings(
+            esm_model, pred_token_ids, token_id_map
+        )
+        msa_embed = _esmc_forward_embeddings(esm_model, msa_tokens, token_id_map)
+    else:
+        pred_one_hot = _gumbel_one_hot(
+            log_probs, temperature=gumbel_temperature, hard=True
+        )
+        pred_embed = _esm_token_embeddings(esm_model, pred_one_hot, token_id_map)
+        msa_embed = _esm_token_embeddings_from_ids(
+            esm_model, msa_tokens, token_id_map
+        )
 
     # Normalize embeddings for cosine similarity.
     pred_embed = F.normalize(pred_embed, dim=-1)
@@ -204,7 +226,14 @@ def msa_similarity_loss_esm(
     # Contrast with random decoys in token space.
     vocab = log_probs.shape[-1]
     decoy_tokens = torch.randint_like(msa_tokens, low=0, high=vocab)
-    decoy_embed = _esm_token_embeddings_from_ids(esm_model, decoy_tokens, token_id_map)
+    if _is_esmc_model(esm_model):
+        decoy_embed = _esmc_forward_embeddings(
+            esm_model, decoy_tokens, token_id_map
+        )
+    else:
+        decoy_embed = _esm_token_embeddings_from_ids(
+            esm_model, decoy_tokens, token_id_map
+        )
     decoy_embed = F.normalize(decoy_embed, dim=-1)
     decoy_sim = (pred_embed_exp * decoy_embed).sum(dim=-1)
     decoy_loss = -(decoy_sim * pos_mask).sum() / (pos_mask.sum() + 1e-6)
