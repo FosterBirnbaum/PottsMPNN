@@ -27,30 +27,97 @@ def get_boltz2_feats(batch):
 def load_esm_model(model_name, device):
     import esm
 
+    if model_name.startswith("esmc"):
+        try:
+            from esm import pretrained
+        except Exception as exc:  # pragma: no cover - import guard
+            raise ImportError(
+                "ESM-C models require the evolutionaryscale/esm package."
+            ) from exc
+
+        model_factory = getattr(pretrained, model_name, None)
+        if model_factory is None:
+            raise ValueError(
+                f"Unknown ESM-C model '{model_name}'. Ensure the name matches the "
+                "evolutionaryscale/esm pretrained API."
+            )
+        esm_model = model_factory()
+        esm_model = esm_model.to(device)
+        esm_model.eval()
+
+        esm_tokenizer = getattr(esm_model, "tokenizer", None)
+        if esm_tokenizer is None:
+            get_tokenizer = getattr(pretrained, "get_tokenizer", None)
+            esm_tokenizer = get_tokenizer(model_name) if get_tokenizer else None
+        if esm_tokenizer is None:
+            raise RuntimeError(
+                "Unable to locate an ESM-C tokenizer for token mapping."
+            )
+        return esm_model, esm_tokenizer
+
     esm_model, esm_alphabet = esm.pretrained.load_model_and_alphabet(model_name)
     esm_model = esm_model.to(device)
     esm_model.eval()
-    esm_batch_converter = esm_alphabet.get_batch_converter()
-    return esm_model, esm_alphabet, esm_batch_converter
+    return esm_model, esm_alphabet
 
 
-def build_esm_token_map(esm_alphabet, model_alphabet):
+def _extract_encoded_tokens(encoded):
+    if isinstance(encoded, dict):
+        for key in ("input_ids", "tokens", "token_ids"):
+            if key in encoded:
+                encoded = encoded[key]
+                break
+    if hasattr(encoded, "tolist"):
+        encoded = encoded.tolist()
+    if isinstance(encoded, (list, tuple)):
+        return [int(token) for token in encoded]
+    return []
+
+
+def build_esm_token_map(esm_vocab, model_alphabet):
     import torch
 
-    if hasattr(esm_alphabet, "get_idx"):
-        get_idx = esm_alphabet.get_idx
-    else:
-        get_idx = esm_alphabet.tok_to_idx.get
-    unknown_idx = getattr(esm_alphabet, "unk_idx", None)
-    if unknown_idx is None:
-        unknown_idx = get_idx("<unk>") if get_idx else 0
+    if hasattr(esm_vocab, "get_idx") or hasattr(esm_vocab, "tok_to_idx"):
+        get_idx = getattr(esm_vocab, "get_idx", None)
+        if get_idx is None:
+            get_idx = esm_vocab.tok_to_idx.get
+        unknown_idx = getattr(esm_vocab, "unk_idx", None)
+        if unknown_idx is None:
+            unknown_idx = get_idx("<unk>") if get_idx else 0
+        token_map = []
+        for aa in model_alphabet:
+            try:
+                token_map.append(get_idx(aa))
+            except Exception:
+                token_map.append(unknown_idx)
+        return torch.tensor(token_map, dtype=torch.long)
 
+    encode = getattr(esm_vocab, "encode", None)
+    if encode is None:
+        raise ValueError(
+            "ESM tokenizer does not expose get_idx/tok_to_idx or encode."
+        )
+
+    special_ids = set()
+    for attr in (
+        "bos_token_id",
+        "eos_token_id",
+        "pad_token_id",
+        "mask_token_id",
+        "unk_token_id",
+    ):
+        token_id = getattr(esm_vocab, attr, None)
+        if token_id is not None:
+            special_ids.add(int(token_id))
+    unknown_idx = getattr(esm_vocab, "unk_token_id", 0)
     token_map = []
     for aa in model_alphabet:
-        try:
-            token_map.append(get_idx(aa))
-        except Exception:
-            token_map.append(unknown_idx)
+        encoded = _extract_encoded_tokens(encode(aa))
+        if not encoded:
+            token_map.append(int(unknown_idx))
+            continue
+        token_id = next((t for t in encoded if t not in special_ids), encoded[0])
+        token_map.append(int(token_id))
     return torch.tensor(token_map, dtype=torch.long)
 
 
@@ -168,10 +235,10 @@ def main(args):
     esm_token_map = None
     # Optional: add an ESM-based contrastive loss over MSA sequences.
     if args.msa_similarity_loss_type == "esm":
-        esm_model, esm_alphabet, _ = load_esm_model(args.esm_model_name, device)
+        esm_model, esm_vocab = load_esm_model(args.esm_model_name, device)
         # ProteinMPNN uses this alphabet ordering for token IDs.
         model_alphabet = "ACDEFGHIKLMNPQRSTVWYX-"
-        esm_token_map = build_esm_token_map(esm_alphabet, model_alphabet)
+        esm_token_map = build_esm_token_map(esm_vocab, model_alphabet)
 
     optimizer = get_std_opt(model, args.hidden_dim, args.warmup_steps)
 

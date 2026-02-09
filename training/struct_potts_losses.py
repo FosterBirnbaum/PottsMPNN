@@ -55,9 +55,22 @@ def _gumbel_one_hot(log_probs, temperature=1.0, hard=True):
     return F.gumbel_softmax(log_probs, tau=temperature, hard=hard, dim=-1)
 
 
+def _esm_embedding_weight(esm_model):
+    for attr in ("embed_tokens", "token_embedder", "embedder"):
+        module = getattr(esm_model, attr, None)
+        if module is not None and hasattr(module, "weight"):
+            return module.weight
+    model_attr = getattr(esm_model, "model", None)
+    if model_attr is not None:
+        module = getattr(model_attr, "embed_tokens", None)
+        if module is not None and hasattr(module, "weight"):
+            return module.weight
+    raise AttributeError("ESM model does not expose an embedding weight.")
+
+
 def _esm_token_embeddings(esm_model, one_hot_tokens, token_id_map):
     """Convert one-hot tokens to ESM token embeddings via a token-id mapping."""
-    embed_weight = esm_model.embed_tokens.weight
+    embed_weight = _esm_embedding_weight(esm_model)
     mapped_embed_weight = embed_weight[token_id_map]
     return torch.einsum("blv,ve->ble", one_hot_tokens, mapped_embed_weight)
 
@@ -65,7 +78,8 @@ def _esm_token_embeddings(esm_model, one_hot_tokens, token_id_map):
 def _esm_token_embeddings_from_ids(esm_model, token_ids, token_id_map):
     """Embed integer token IDs using ESM's embedding table."""
     mapped_ids = token_id_map[token_ids]
-    return esm_model.embed_tokens(mapped_ids)
+    embed_weight = _esm_embedding_weight(esm_model)
+    return F.embedding(mapped_ids, embed_weight)
 
 
 def msa_similarity_loss_esm(
