@@ -66,7 +66,7 @@ def _esm_featurize(seq, chain_lens, esm, batch_converter, esm_embed_layer, devic
         embs = embs[mask]
     return embs
 
-def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=None, batch_converter=None, esm_embed_dim=2560, esm_embed_layer=36, one_hot=False, return_esm=False, openfold_backbone=False, msa_seqs=False, msa_batch_size=10):
+def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=None, batch_converter=None, esm_embed_dim=2560, esm_embed_layer=36, one_hot=False, return_esm=False, openfold_backbone=False, msa_seqs=False, msa_batch_size=10, esm_msa_cache=None, msa_cache_key=None):
     alphabet = 'ACDEFGHIKLMNPQRSTVWYX-'
 
     if msa_seqs:
@@ -93,6 +93,13 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
                     #     break
             new_batch.append(b_copy)
         batch = new_batch
+
+    if esm is not None and msa_seqs and esm_msa_cache is not None and msa_cache_key is not None:
+        cache_marker = "__msa_cache_key__"
+        cached_key = esm_msa_cache.get(cache_marker)
+        if cached_key != msa_cache_key:
+            esm_msa_cache.clear()
+            esm_msa_cache[cache_marker] = msa_cache_key
 
     B = len(batch)
     lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
@@ -250,7 +257,25 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         #     print(b['name'])
         #     return
         if esm is not None:
-            esm_emb = _esm_featurize(all_sequence, chain_lens, esm, batch_converter, esm_embed_layer, device, one_hot=one_hot)
+            esm_emb = None
+            cache_key = None
+            if msa_seqs and esm_msa_cache is not None:
+                cache_key = (all_sequence, esm_embed_layer, bool(one_hot))
+                esm_emb = esm_msa_cache.get(cache_key)
+                if esm_emb is not None and return_esm:
+                    esm_emb = esm_emb.to(device=device)
+            if esm_emb is None:
+                esm_emb = _esm_featurize(
+                    all_sequence,
+                    chain_lens,
+                    esm,
+                    batch_converter,
+                    esm_embed_layer,
+                    device,
+                    one_hot=one_hot,
+                )
+                if cache_key is not None:
+                    esm_msa_cache[cache_key] = esm_emb.detach().cpu()
             if return_esm:
                 return esm_emb, chain_lens
             S[i,:l] = esm_emb.cpu().numpy()
