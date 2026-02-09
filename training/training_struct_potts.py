@@ -364,17 +364,29 @@ def main(args):
                             etab_geom, e_idx, etab_seq_dense, mask
                         )
                         if args.msa_similarity_loss_type == "esm":
-                            loss_msa = msa_similarity_loss_esm(
-                                log_probs,
-                                boltz2_feats["msa"],
-                                boltz2_feats["msa_mask"],
-                                mask,
-                                esm_model,
-                                esm_token_map,
-                                margin=args.msa_margin,
-                                gumbel_temperature=args.esm_gumbel_temperature,
-                                pred_embed_mode=args.esm_pred_embed_mode,
-                            )
+                            if esm_is_esmc:
+                                loss_msa = msa_similarity_loss_esmc(
+                                    log_probs,
+                                    boltz2_feats["msa"],
+                                    boltz2_feats["msa_mask"],
+                                    mask,
+                                    esm_model,
+                                    esm_token_map,
+                                    margin=args.msa_margin,
+                                    gumbel_temperature=args.esm_gumbel_temperature,
+                                )
+                            else:
+                                loss_msa = msa_similarity_loss_esm(
+                                    log_probs,
+                                    boltz2_feats["msa"],
+                                    boltz2_feats["msa_mask"],
+                                    mask,
+                                    esm_model,
+                                    esm_token_map,
+                                    margin=args.msa_margin,
+                                    gumbel_temperature=args.esm_gumbel_temperature,
+                                    pred_embed_mode=args.esm_pred_embed_mode,
+                                )
                         else:
                             loss_msa = msa_similarity_loss(
                                 log_probs,
@@ -423,17 +435,29 @@ def main(args):
                         etab_geom, e_idx, etab_seq_dense, mask
                     )
                     if args.msa_similarity_loss_type == "esm":
-                        loss_msa = msa_similarity_loss_esm(
-                            log_probs,
-                            boltz2_feats["msa"],
-                            boltz2_feats["msa_mask"],
-                            mask,
-                            esm_model,
-                            esm_token_map,
-                            margin=args.msa_margin,
-                            gumbel_temperature=args.esm_gumbel_temperature,
-                            pred_embed_mode=args.esm_pred_embed_mode,
-                        )
+                        if esm_is_esmc:
+                            loss_msa = msa_similarity_loss_esmc(
+                                log_probs,
+                                boltz2_feats["msa"],
+                                boltz2_feats["msa_mask"],
+                                mask,
+                                esm_model,
+                                esm_token_map,
+                                margin=args.msa_margin,
+                                gumbel_temperature=args.esm_gumbel_temperature,
+                            )
+                        else:
+                            loss_msa = msa_similarity_loss_esm(
+                                log_probs,
+                                boltz2_feats["msa"],
+                                boltz2_feats["msa_mask"],
+                                mask,
+                                esm_model,
+                                esm_token_map,
+                                margin=args.msa_margin,
+                                gumbel_temperature=args.esm_gumbel_temperature,
+                                pred_embed_mode=args.esm_pred_embed_mode,
+                            )
                     else:
                         loss_msa = msa_similarity_loss(
                             log_probs,

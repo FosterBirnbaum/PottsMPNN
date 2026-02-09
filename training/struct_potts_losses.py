@@ -68,6 +68,9 @@ def _esm_embedding_weight(esm_model):
         module = getattr(esm_model, attr, None)
         if module is not None and hasattr(module, "weight"):
             return module.weight
+    module = getattr(esm_model, "embed", None)
+    if module is not None and hasattr(module, "weight"):
+        return module.weight
     model_attr = getattr(esm_model, "model", None)
     if model_attr is not None:
         module = getattr(model_attr, "embed_tokens", None)
@@ -91,12 +94,31 @@ def _esm_token_embeddings_from_ids(esm_model, token_ids, token_id_map):
 
 
 def _esmc_forward_embeddings(esm_model, token_ids, token_mask=None):
-    output = esm_model.forward(sequence_tokens=token_ids, sequence_id=token_mask)
-    if output.embeddings is not None:
-        return output.embeddings
-    if output.hidden_states is not None:
-        return output.hidden_states[-1]
-    raise ValueError("ESM-C forward did not return embeddings or hidden_states.")
+    embed_weight = _esm_embedding_weight(esm_model)
+    embeddings = F.embedding(token_ids, embed_weight)
+    return _esmc_forward_from_embeddings(esm_model, embeddings, token_mask)
+
+
+def _esmc_forward_from_embeddings(esm_model, embeddings, token_mask=None):
+    if token_mask is None:
+        token_mask = torch.ones(
+            embeddings.shape[:2], device=embeddings.device, dtype=torch.bool
+        )
+    token_mask = token_mask.to(dtype=torch.bool, device=embeddings.device)
+    use_flash_attn = getattr(esm_model, "_use_flash_attn", False)
+    if use_flash_attn:
+        from esm.models.esmc import pad_input, unpad_input
+
+        x, indices, *_ = unpad_input(embeddings, token_mask)
+        x, _, _ = esm_model.transformer(x, sequence_id=token_mask)
+        x = pad_input(x, indices, embeddings.shape[0], embeddings.shape[1])
+    else:
+        x, _, _ = esm_model.transformer(embeddings, sequence_id=token_mask)
+    return x
+
+
+def _is_esmc_model(esm_model):
+    return hasattr(esm_model, "tokenizer") and hasattr(esm_model, "sequence_head")
 
 
 def msa_similarity_loss_esmc(
@@ -119,28 +141,43 @@ def msa_similarity_loss_esmc(
     seq_mask = seq_mask.to(device)
     token_id_map = token_id_map.to(device)
 
-    pred_one_hot = _gumbel_one_hot(log_probs, temperature=gumbel_temperature, hard=True)
-    pred_token_ids = torch.argmax(pred_one_hot, dim=-1)
-    pred_token_ids = token_id_map[pred_token_ids]
+    pred_one_hot = _gumbel_one_hot(
+        log_probs, temperature=gumbel_temperature, hard=True
+    )
+    embed_weight = _esm_embedding_weight(esm_model)
+    mapped_embed_weight = embed_weight[token_id_map]
+    pred_mask = seq_mask.bool()
+    pred_embed_in = torch.einsum("blv,ve->ble", pred_one_hot, mapped_embed_weight)
+    pred_embed_in = pred_embed_in * pred_mask[..., None]
 
     pad_id = getattr(getattr(esm_model, "tokenizer", None), "pad_token_id", None)
-    pred_mask = seq_mask.bool()
-    if pad_id is not None:
-        pred_token_ids = pred_token_ids.masked_fill(~pred_mask, int(pad_id))
-
-    pred_embed = _esmc_forward_embeddings(esm_model, pred_token_ids, pred_mask)
-
     msa_token_ids = token_id_map[msa_tokens]
     msa_mask_full = (msa_mask * seq_mask[:, None, :]).bool()
     if pad_id is not None:
         msa_token_ids = msa_token_ids.masked_fill(~msa_mask_full, int(pad_id))
 
     b, m, l = msa_token_ids.shape
-    msa_embed = _esmc_forward_embeddings(
-        esm_model,
-        msa_token_ids.reshape(b * m, l),
-        msa_mask_full.reshape(b * m, l),
-    ).reshape(b, m, l, -1)
+    msa_token_ids = msa_token_ids.reshape(b * m, l)
+    msa_mask_flat = msa_mask_full.reshape(b * m, l)
+    msa_embed_in = F.embedding(msa_token_ids, embed_weight)
+
+    vocab = log_probs.shape[-1]
+    decoy_tokens = torch.randint_like(msa_tokens, low=0, high=vocab)
+    decoy_token_ids = token_id_map[decoy_tokens]
+    if pad_id is not None:
+        decoy_token_ids = decoy_token_ids.masked_fill(~msa_mask_full, int(pad_id))
+    decoy_token_ids = decoy_token_ids.reshape(b * m, l)
+    decoy_embed_in = F.embedding(decoy_token_ids, embed_weight)
+
+    combined_embed_in = torch.cat([pred_embed_in, msa_embed_in, decoy_embed_in], dim=0)
+    combined_mask = torch.cat([pred_mask, msa_mask_flat, msa_mask_flat], dim=0)
+    combined_embed = _esmc_forward_from_embeddings(
+        esm_model, combined_embed_in, combined_mask
+    )
+
+    pred_embed = combined_embed[:b]
+    msa_embed = combined_embed[b : b + b * m].reshape(b, m, l, -1)
+    decoy_embed = combined_embed[b + b * m :].reshape(b, m, l, -1)
 
     pred_embed = F.normalize(pred_embed, dim=-1)
     msa_embed = F.normalize(msa_embed, dim=-1)
@@ -150,17 +187,6 @@ def msa_similarity_loss_esmc(
     pos_mask = msa_mask * seq_mask[:, None, :]
     pos_loss = -(sim * pos_mask).sum() / (pos_mask.sum() + 1e-6)
 
-    vocab = log_probs.shape[-1]
-    decoy_tokens = torch.randint_like(msa_tokens, low=0, high=vocab)
-    decoy_token_ids = token_id_map[decoy_tokens]
-    if pad_id is not None:
-        decoy_token_ids = decoy_token_ids.masked_fill(~msa_mask_full, int(pad_id))
-
-    decoy_embed = _esmc_forward_embeddings(
-        esm_model,
-        decoy_token_ids.reshape(b * m, l),
-        msa_mask_full.reshape(b * m, l),
-    ).reshape(b, m, l, -1)
     decoy_embed = F.normalize(decoy_embed, dim=-1)
     decoy_sim = (pred_embed_exp * decoy_embed).sum(dim=-1)
     decoy_loss = -(decoy_sim * pos_mask).sum() / (pos_mask.sum() + 1e-6)
@@ -220,13 +246,12 @@ def msa_similarity_loss_esm(
     vocab = log_probs.shape[-1]
     decoy_tokens = torch.randint_like(msa_tokens, low=0, high=vocab)
     if _is_esmc_model(esm_model):
-        decoy_embed = _esmc_forward_embeddings(
-            esm_model, decoy_tokens, token_id_map
+        raise ValueError(
+            "Use msa_similarity_loss_esmc for ESM-C models instead of msa_similarity_loss_esm."
         )
-    else:
-        decoy_embed = _esm_token_embeddings_from_ids(
-            esm_model, decoy_tokens, token_id_map
-        )
+    decoy_embed = _esm_token_embeddings_from_ids(
+        esm_model, decoy_tokens, token_id_map
+    )
     decoy_embed = F.normalize(decoy_embed, dim=-1)
     decoy_sim = (pred_embed_exp * decoy_embed).sum(dim=-1)
     decoy_loss = -(decoy_sim * pos_mask).sum() / (pos_mask.sum() + 1e-6)
