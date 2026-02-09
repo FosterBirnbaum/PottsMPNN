@@ -24,6 +24,28 @@ def get_boltz2_feats(batch):
     return boltz2_feats
 
 
+def validate_boltz2_alignment(boltz2_feats, seq_mask):
+    token_mask = boltz2_feats.get("token_pad_mask")
+    msa = boltz2_feats.get("msa")
+    if token_mask is None:
+        raise KeyError("Boltz2 features missing token_pad_mask.")
+    if token_mask.shape[0] != seq_mask.shape[0]:
+        raise ValueError(
+            f"Boltz2 batch size {token_mask.shape[0]} does not match "
+            f"sequence mask batch size {seq_mask.shape[0]}."
+        )
+    if token_mask.shape[1] != seq_mask.shape[1]:
+        raise ValueError(
+            f"Boltz2 token length {token_mask.shape[1]} does not match "
+            f"sequence length {seq_mask.shape[1]}."
+        )
+    if msa is not None and msa.shape[-1] != seq_mask.shape[1]:
+        raise ValueError(
+            f"Boltz2 MSA length {msa.shape[-1]} does not match "
+            f"sequence length {seq_mask.shape[1]}."
+        )
+
+
 def load_esm_model(model_name, device):
     import esm
 
@@ -339,6 +361,7 @@ def main(args):
                     k: (v.to(device) if torch.is_tensor(v) else v)
                     for k, v in boltz2_feats.items()
                 }
+                validate_boltz2_alignment(boltz2_feats, mask)
 
                 optimizer.zero_grad()
                 potts_alpha = alpha_schedule(
@@ -528,6 +551,7 @@ def main(args):
                         k: (v.to(device) if torch.is_tensor(v) else v)
                         for k, v in boltz2_feats.items()
                     }
+                    validate_boltz2_alignment(boltz2_feats, mask)
                     trunk_out = boltz2_trunk(boltz2_feats, args.boltz2_recycles)
                     etab_seq_dense = seq_potts_head(trunk_out.z_trunk)
                     log_probs, etab_geom, e_idx, frames, positions, logits = model(

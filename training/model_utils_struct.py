@@ -77,8 +77,12 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         all_seq = ''
         random.seed(epoch + np.sum([ord(char) for char in batch[0]['name']]))
         for chain_letter in all_chains:
-            all_seq += batch[0][f'seq_chain_{chain_letter}'][0]
-            random.shuffle(batch[0][f'seq_chain_{chain_letter}'])
+            chain_seqs = batch[0][f'seq_chain_{chain_letter}']
+            if isinstance(chain_seqs, str):
+                chain_seqs = [chain_seqs]
+                batch[0][f'seq_chain_{chain_letter}'] = chain_seqs
+            all_seq += chain_seqs[0]
+            random.shuffle(chain_seqs)
         num_seqs = max(1, math.floor(msa_batch_size / len(all_seq)))
         
         for i_seq in range(num_seqs):

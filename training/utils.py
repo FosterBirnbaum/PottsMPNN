@@ -81,6 +81,15 @@ class StructureLoader():
         np.random.shuffle(self.clusters)
         for b_idx in self.clusters:
             batch = [self.dataset[i] for i in b_idx]
+            from boltz2_features import build_boltz2_item_feats, collate_boltz2_feats
+
+            try:
+                boltz2_items = [build_boltz2_item_feats(item) for item in batch]
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to build Boltz2 features for this batch."
+                ) from exc
+            batch[0]["boltz2_feats"] = collate_boltz2_feats(boltz2_items)
             yield batch
 
 
@@ -143,6 +152,10 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                 my_dict = {}
                 s = 0
                 concat_seq = ''
+                concat_atom14 = []
+                concat_atom14_mask = []
+                chain_order = []
+                chain_lengths = []
                 concat_N = []
                 concat_CA = []
                 concat_C = []
@@ -156,7 +169,8 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                         letter = chain_alphabet[idx]
                         res = np.argwhere(t['idx']==idx)
                         initial_sequence= "".join(list(np.array(list(t['seq']))[res][0,]))
-                        initial_sequence = t['seqs'][idx]
+                        if "seqs" in t:
+                            initial_sequence = t["seqs"][idx]
                         front_trim = 0
                         back_trim = 0
                         if initial_sequence[4:10] == "HHHHHH":
@@ -192,14 +206,24 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                         if res.shape[0] < 4:
                             pass
                         else:
-                            my_dict['seq_chain_'+letter]= "".join(list(np.array(list(t['seq']))[res][0,]))
-                            concat_seq += my_dict['seq_chain_'+letter]
+                            chain_seq = "".join(list(np.array(list(t['seq']))[res][0,]))
+                            my_dict['seq_chain_'+letter]= chain_seq
+                            if "seqs" in t:
+                                my_dict[f"msa_chain_{letter}"] = t["seqs"][idx]
+                            concat_seq += chain_seq
+                            chain_order.append(letter)
+                            chain_lengths.append(len(chain_seq))
                             if idx in t['masked']:
                                 mask_list.append(letter)
                             else:
                                 visible_list.append(letter)
                             coords_dict_chain = {}
                             all_atoms = np.array(t['xyz'][res,])[0,] #[L, 14, 3]
+                            concat_atom14.append(all_atoms)
+                            if "mask" in t:
+                                concat_atom14_mask.append(np.array(t["mask"][res,])[0,])
+                            else:
+                                concat_atom14_mask.append(np.ones(all_atoms.shape[:2], dtype=np.float32))
                             coords_dict_chain['N_chain_'+letter]=all_atoms[:,0,:].tolist()
                             coords_dict_chain['CA_chain_'+letter]=all_atoms[:,1,:].tolist()
                             coords_dict_chain['C_chain_'+letter]=all_atoms[:,2,:].tolist()
@@ -210,6 +234,11 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                     my_dict['visible_list']= visible_list
                     my_dict['num_of_chains'] = len(mask_list) + len(visible_list)
                     my_dict['seq'] = concat_seq
+                    my_dict["chain_order"] = chain_order
+                    my_dict["chain_lengths"] = chain_lengths
+                    if concat_atom14:
+                        my_dict["atom14_xyz"] = np.concatenate(concat_atom14, axis=0)
+                        my_dict["atom14_mask"] = np.concatenate(concat_atom14_mask, axis=0)
                     if len(concat_seq) <= max_length:
                         pdb_dict_list.append(my_dict)
                     if len(pdb_dict_list) >= num_units:
@@ -311,11 +340,15 @@ def loader_pdb(item,params):
         if k[0] in homo:
             masked.append(counter)
 
-    return {'seq'    : seq,
-            'xyz'    : torch.cat(xyz,dim=0),
-            'idx'    : torch.cat(idx,dim=0),
-            'masked' : torch.Tensor(masked).int(),
-            'label'  : item[0]}
+    mask = [chains[k[0]]["mask"] for k in asmb.keys()]
+    return {
+        "seq": seq,
+        "xyz": torch.cat(xyz, dim=0),
+        "mask": torch.cat(mask, dim=0),
+        "idx": torch.cat(idx, dim=0),
+        "masked": torch.Tensor(masked).int(),
+        "label": item[0],
+    }
 
 def build_training_clusters(params, debug):
     val_ids = set([int(l) for l in open(params['VAL']).readlines()])
