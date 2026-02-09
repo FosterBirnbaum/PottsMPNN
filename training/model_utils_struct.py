@@ -1257,7 +1257,7 @@ class MultiLayerLinear(nn.Module):
 class ProteinMPNN(nn.Module):
     def __init__(self, num_letters=21, node_features=128, edge_features=128,
         hidden_dim=128, output_dim=400, num_encoder_layers=3, num_decoder_layers=3, seq_encoding='one_hot',
-        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0' ):
+        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True):
         super(ProteinMPNN, self).__init__()
         # Hyperparameters
         self.node_features = node_features
@@ -1270,6 +1270,9 @@ class ProteinMPNN(nn.Module):
         self.struct_predict_pairs = struct_predict_pairs
         self.struct_predict_seq = struct_predict_seq
         self.use_seq = use_seq
+        self.struct_use_decoder_one_hot = struct_use_decoder_one_hot
+        self.struct_one_hot_temperature = struct_one_hot_temperature
+        self.struct_one_hot_straight_through = struct_one_hot_straight_through
 
         self.features = ProteinFeatures(node_features, edge_features, top_k=k_neighbors, augment_eps=augment_eps, augment_type=augment_type, feat_type=feat_type, augment_lim=augment_lim)
         self.W_e = nn.Linear(edge_features, hidden_dim, bias=True)
@@ -1342,7 +1345,14 @@ class ProteinMPNN(nn.Module):
             if (not name.startswith("struct_module.") and self.use_struct_weights) and p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, all_chain_lens=None, epoch=1, replicate=1):
+    def decoder_one_hot(self, logits, temperature=1.0, straight_through=True):
+        probs = F.softmax(logits / temperature, dim=-1)
+        if not straight_through:
+            return probs
+        hard = F.one_hot(torch.argmax(probs, dim=-1), num_classes=probs.shape[-1]).float()
+        return hard + (probs - probs.detach())
+
+    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, all_chain_lens=None, epoch=1, replicate=1, return_logits=False, struct_etab_seq_dense=None, struct_potts_alpha=None):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -1424,14 +1434,26 @@ class ProteinMPNN(nn.Module):
             if self.struct_predict_pairs:
                 struct_etab = etab.clone().view(b, n, k, h2, h2)
                 struct_etab = expand_etab(struct_etab, E_idx).reshape(b, n, n, h).squeeze(-1).to(torch.float32)
+                if struct_etab_seq_dense is not None and struct_potts_alpha is not None:
+                    struct_etab = (
+                        struct_potts_alpha * struct_etab
+                        + (1.0 - struct_potts_alpha) * struct_etab_seq_dense.to(struct_etab)
+                    )
             else:
                 struct_etab = torch.zeros((b, n, n, h, h)).to(torch.float32)
             if self.struct_predict_seq:
-                h_V_fold = logits
+                if self.struct_use_decoder_one_hot:
+                    h_V_fold = self.decoder_one_hot(
+                        logits,
+                        temperature=self.struct_one_hot_temperature,
+                        straight_through=self.struct_one_hot_straight_through,
+                    )
+                else:
+                    h_V_fold = logits
             else:
                 h_V_fold = torch.zeros_like(logits)
             if self.use_struct_weights:
-                h_V_fold = self.node_struct_reshape(logits)
+                h_V_fold = self.node_struct_reshape(h_V_fold)
                 struct_etab = self.edge_struct_reshape(struct_etab)
             h_V_fold = h_V_fold.to(torch.float32)
             structure = self.struct_module(h_V_fold, struct_etab, 7*torch.ones(mask.shape, dtype=torch.long, device=etab.device), residue_idx.to(torch.long), mask)
@@ -1443,6 +1465,8 @@ class ProteinMPNN(nn.Module):
             positions = None
 
 
+        if return_logits:
+            return log_probs, etab, E_idx, frames, positions, logits
         return log_probs, etab, E_idx, frames, positions
 
     def forward_recycle(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, all_chain_lens=None, epoch=1, replicate=1, num_recycles=3):
