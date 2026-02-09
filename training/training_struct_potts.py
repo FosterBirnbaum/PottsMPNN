@@ -24,6 +24,36 @@ def get_boltz2_feats(batch):
     return boltz2_feats
 
 
+def load_esm_model(model_name, device):
+    import esm
+
+    esm_model, esm_alphabet = esm.pretrained.load_model_and_alphabet(model_name)
+    esm_model = esm_model.to(device)
+    esm_model.eval()
+    esm_batch_converter = esm_alphabet.get_batch_converter()
+    return esm_model, esm_alphabet, esm_batch_converter
+
+
+def build_esm_token_map(esm_alphabet, model_alphabet):
+    import torch
+
+    if hasattr(esm_alphabet, "get_idx"):
+        get_idx = esm_alphabet.get_idx
+    else:
+        get_idx = esm_alphabet.tok_to_idx.get
+    unknown_idx = getattr(esm_alphabet, "unk_idx", None)
+    if unknown_idx is None:
+        unknown_idx = get_idx("<unk>") if get_idx else 0
+
+    token_map = []
+    for aa in model_alphabet:
+        try:
+            token_map.append(get_idx(aa))
+        except Exception:
+            token_map.append(unknown_idx)
+    return torch.tensor(token_map, dtype=torch.long)
+
+
 def main(args):
     import time
     import os
@@ -51,12 +81,15 @@ def main(args):
     from struct_potts_losses import (
         potts_consistency_loss,
         msa_similarity_loss,
+        msa_similarity_loss_esm,
         structure_consistency_loss,
+        structure_fape_loss,
     )
 
     scaler = torch.cuda.amp.GradScaler()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+    # Time-stamp outputs so multiple runs do not overwrite each other.
     base_folder = time.strftime(args.path_for_outputs, time.localtime())
     if base_folder[-1] != "/":
         base_folder += "/"
@@ -105,6 +138,7 @@ def main(args):
         valid_set, worker_init_fn=worker_init_fn, **load_param
     )
 
+    # ProteinMPNN acts as the sequence/structure head for Potts-style training.
     model = ProteinMPNN(
         node_features=args.hidden_dim,
         edge_features=args.hidden_dim,
@@ -120,6 +154,7 @@ def main(args):
     )
     model.to(device)
 
+    # Boltz2 provides the trunk representation and MSA features for Potts loss.
     boltz2_model = load_boltz2_checkpoint(args.boltz2_checkpoint, device)
     boltz2_model.to(device)
     boltz2_model.eval()
@@ -128,6 +163,15 @@ def main(args):
     seq_potts_head = SequencePottsHead(
         pair_dim=boltz2_model.hparams.token_z, potts_dim=args.potts_dim
     ).to(device)
+
+    esm_model = None
+    esm_token_map = None
+    # Optional: add an ESM-based contrastive loss over MSA sequences.
+    if args.msa_similarity_loss_type == "esm":
+        esm_model, esm_alphabet, _ = load_esm_model(args.esm_model_name, device)
+        # ProteinMPNN uses this alphabet ordering for token IDs.
+        model_alphabet = "ACDEFGHIKLMNPQRSTVWYX-"
+        esm_token_map = build_esm_token_map(esm_alphabet, model_alphabet)
 
     optimizer = get_std_opt(model, args.hidden_dim, args.warmup_steps)
 
@@ -191,9 +235,29 @@ def main(args):
                 reload_c += 1
 
             for _, batch in enumerate(loader_train):
-                X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = (
-                    featurize(batch, device)
+                (
+                    X,
+                    S,
+                    _,
+                    mask,
+                    lengths,
+                    chain_M,
+                    residue_idx,
+                    mask_self,
+                    chain_encoding_all,
+                    _,
+                    backbone_4x4,
+                    _,
+                ) = featurize(
+                    batch,
+                    device,
+                    augment_type="atomic",
+                    augment_eps=args.backbone_noise,
+                    replicate=1,
+                    epoch=epoch,
+                    openfold_backbone=args.structure_loss_type == "fape",
                 )
+                backbone_4x4 = backbone_4x4.to(device)
                 mask_for_loss = mask * chain_M
                 boltz2_feats = get_boltz2_feats(batch)
                 boltz2_feats = {
@@ -224,16 +288,33 @@ def main(args):
                         loss_potts = potts_consistency_loss(
                             etab_geom, e_idx, etab_seq_dense, mask
                         )
-                        loss_msa = msa_similarity_loss(
-                            log_probs,
-                            boltz2_feats["msa"],
-                            boltz2_feats["msa_mask"],
-                            mask,
-                            margin=args.msa_margin,
-                        )
-                        loss_struct = structure_consistency_loss(
-                            positions, X, mask
-                        )
+                        if args.msa_similarity_loss_type == "esm":
+                            loss_msa = msa_similarity_loss_esm(
+                                log_probs,
+                                boltz2_feats["msa"],
+                                boltz2_feats["msa_mask"],
+                                mask,
+                                esm_model,
+                                esm_token_map,
+                                margin=args.msa_margin,
+                                gumbel_temperature=args.esm_gumbel_temperature,
+                            )
+                        else:
+                            loss_msa = msa_similarity_loss(
+                                log_probs,
+                                boltz2_feats["msa"],
+                                boltz2_feats["msa_mask"],
+                                mask,
+                                margin=args.msa_margin,
+                            )
+                        if args.structure_loss_type == "fape":
+                            loss_struct = structure_fape_loss(
+                                frames, backbone_4x4, mask
+                            )
+                        else:
+                            loss_struct = structure_consistency_loss(
+                                positions, X, mask
+                            )
                         loss_total = (
                             args.loss_potts_weight * loss_potts
                             + args.loss_msa_weight * loss_msa
@@ -265,14 +346,31 @@ def main(args):
                     loss_potts = potts_consistency_loss(
                         etab_geom, e_idx, etab_seq_dense, mask
                     )
-                    loss_msa = msa_similarity_loss(
-                        log_probs,
-                        boltz2_feats["msa"],
-                        boltz2_feats["msa_mask"],
-                        mask,
-                        margin=args.msa_margin,
-                    )
-                    loss_struct = structure_consistency_loss(positions, X, mask)
+                    if args.msa_similarity_loss_type == "esm":
+                        loss_msa = msa_similarity_loss_esm(
+                            log_probs,
+                            boltz2_feats["msa"],
+                            boltz2_feats["msa_mask"],
+                            mask,
+                            esm_model,
+                            esm_token_map,
+                            margin=args.msa_margin,
+                            gumbel_temperature=args.esm_gumbel_temperature,
+                        )
+                    else:
+                        loss_msa = msa_similarity_loss(
+                            log_probs,
+                            boltz2_feats["msa"],
+                            boltz2_feats["msa_mask"],
+                            mask,
+                            margin=args.msa_margin,
+                        )
+                    if args.structure_loss_type == "fape":
+                        loss_struct = structure_fape_loss(
+                            frames, backbone_4x4, mask
+                        )
+                    else:
+                        loss_struct = structure_consistency_loss(positions, X, mask)
                     loss_total = (
                         args.loss_potts_weight * loss_potts
                         + args.loss_msa_weight * loss_msa
@@ -301,9 +399,29 @@ def main(args):
                     epoch, total_step, args.alpha_start, args.alpha_end, args.alpha_warmup_epochs
                 )
                 for _, batch in enumerate(loader_valid):
-                    X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = (
-                        featurize(batch, device)
+                    (
+                        X,
+                        S,
+                        _,
+                        mask,
+                        lengths,
+                        chain_M,
+                        residue_idx,
+                        mask_self,
+                        chain_encoding_all,
+                        _,
+                        backbone_4x4,
+                        _,
+                    ) = featurize(
+                        batch,
+                        device,
+                        augment_type="atomic",
+                        augment_eps=args.backbone_noise,
+                        replicate=1,
+                        epoch=epoch,
+                        openfold_backbone=args.structure_loss_type == "fape",
                     )
+                    backbone_4x4 = backbone_4x4.to(device)
                     boltz2_feats = get_boltz2_feats(batch)
                     boltz2_feats = {
                         k: (v.to(device) if torch.is_tensor(v) else v)
@@ -430,5 +548,27 @@ if __name__ == "__main__":
     argparser.add_argument("--loss_struct_weight", type=float, default=1.0)
     argparser.add_argument("--loss_nll_weight", type=float, default=1.0)
     argparser.add_argument("--msa_margin", type=float, default=0.1)
+    argparser.add_argument(
+        "--msa_similarity_loss_type",
+        type=str,
+        default="log_probs",
+        choices=["log_probs", "esm"],
+    )
+    argparser.add_argument(
+        "--esm_model_name",
+        type=str,
+        default="esm2_t33_650M_UR50D",
+    )
+    argparser.add_argument(
+        "--esm_gumbel_temperature",
+        type=float,
+        default=1.0,
+    )
+    argparser.add_argument(
+        "--structure_loss_type",
+        type=str,
+        default="ca",
+        choices=["ca", "fape"],
+    )
 
     main(argparser.parse_args())
