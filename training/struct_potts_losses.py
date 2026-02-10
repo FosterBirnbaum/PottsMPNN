@@ -121,6 +121,79 @@ def _is_esmc_model(esm_model):
     return hasattr(esm_model, "tokenizer") and hasattr(esm_model, "sequence_head")
 
 
+class ESMCDecoySequencePool:
+    """Reservoir-like pool of real MSA sequences with cached ESM-C input embeddings."""
+
+    def __init__(self, max_size=8192):
+        self.max_size = int(max_size)
+        self._entries_by_len = {}
+
+    def _bucket(self, length):
+        bucket = self._entries_by_len.get(length)
+        if bucket is None:
+            bucket = {}
+            self._entries_by_len[length] = bucket
+        return bucket
+
+    @staticmethod
+    def _to_key(token_ids_1d):
+        return token_ids_1d.detach().to(torch.int16).cpu().numpy().tobytes()
+
+    @torch.no_grad()
+    def add(self, mapped_token_ids, embed_in=None):
+        """Add tokenized sequences [N, L] (and optional embedding inputs [N, L, E])."""
+        if mapped_token_ids.ndim != 2:
+            raise ValueError("mapped_token_ids must have shape [N, L].")
+        n, length = mapped_token_ids.shape
+        bucket = self._bucket(length)
+        mapped_token_ids_cpu = mapped_token_ids.detach().to(torch.long).cpu()
+        embed_cpu = None
+        if embed_in is not None:
+            embed_cpu = embed_in.detach().cpu()
+        for i in range(n):
+            key = self._to_key(mapped_token_ids_cpu[i])
+            if key in bucket:
+                continue
+            bucket[key] = {
+                "token_ids": mapped_token_ids_cpu[i].clone(),
+                "embed": embed_cpu[i].clone() if embed_cpu is not None else None,
+            }
+            if len(bucket) > self.max_size:
+                # Random eviction keeps memory bounded without expensive bookkeeping.
+                victim_key = next(iter(bucket))
+                del bucket[victim_key]
+
+    def sample(self, length, n_samples, exclude_token_ids=None, device=None, dtype=None):
+        """Sample up to n_samples sequences for a specific length, excluding provided IDs."""
+        bucket = self._entries_by_len.get(length, {})
+        if not bucket or n_samples <= 0:
+            return None, None
+
+        exclude_keys = set()
+        if exclude_token_ids is not None:
+            exclude_ids = exclude_token_ids.detach().to(torch.long).cpu().reshape(-1, length)
+            exclude_keys = {self._to_key(row) for row in exclude_ids}
+
+        available = [k for k in bucket.keys() if k not in exclude_keys]
+        if not available:
+            return None, None
+        n_take = min(int(n_samples), len(available))
+        pick_idx = torch.randperm(len(available))[:n_take].tolist()
+        picks = [bucket[available[i]] for i in pick_idx]
+
+        token_ids = torch.stack([p["token_ids"] for p in picks], dim=0)
+        embeds = None
+        if picks[0]["embed"] is not None:
+            embeds = torch.stack([p["embed"] for p in picks], dim=0)
+            if dtype is not None:
+                embeds = embeds.to(dtype=dtype)
+        if device is not None:
+            token_ids = token_ids.to(device)
+            if embeds is not None:
+                embeds = embeds.to(device)
+        return token_ids, embeds
+
+
 def msa_similarity_loss_esmc(
     log_probs,
     msa_tokens,
@@ -130,6 +203,8 @@ def msa_similarity_loss_esmc(
     token_id_map,
     margin=0.0,
     gumbel_temperature=1.0,
+    decoy_real_fraction=0.0,
+    decoy_pool=None,
 ):
     """Contrastive ESM-C loss using forward() embeddings."""
     if esm_model is None:
@@ -146,6 +221,7 @@ def msa_similarity_loss_esmc(
     )
     embed_weight = _esm_embedding_weight(esm_model)
     mapped_embed_weight = embed_weight[token_id_map]
+    pred_one_hot = pred_one_hot.to(dtype=mapped_embed_weight.dtype)
     pred_mask = seq_mask.bool()
     pred_embed_in = torch.einsum("blv,ve->ble", pred_one_hot, mapped_embed_weight)
     pred_embed_in = pred_embed_in * pred_mask[..., None]
@@ -161,6 +237,9 @@ def msa_similarity_loss_esmc(
     msa_mask_flat = msa_mask_full.reshape(b * m, l)
     msa_embed_in = F.embedding(msa_token_ids, embed_weight)
 
+    if decoy_pool is not None:
+        decoy_pool.add(msa_token_ids, msa_embed_in)
+
     vocab = log_probs.shape[-1]
     decoy_tokens = torch.randint_like(msa_tokens, low=0, high=vocab)
     decoy_token_ids = token_id_map[decoy_tokens]
@@ -168,6 +247,24 @@ def msa_similarity_loss_esmc(
         decoy_token_ids = decoy_token_ids.masked_fill(~msa_mask_full, int(pad_id))
     decoy_token_ids = decoy_token_ids.reshape(b * m, l)
     decoy_embed_in = F.embedding(decoy_token_ids, embed_weight)
+
+    real_fraction = float(max(0.0, min(1.0, decoy_real_fraction)))
+    n_real = int(round(real_fraction * decoy_token_ids.shape[0]))
+    if decoy_pool is not None and n_real > 0:
+        sampled_ids, sampled_embed = decoy_pool.sample(
+            length=l,
+            n_samples=n_real,
+            exclude_token_ids=msa_token_ids,
+            device=device,
+            dtype=embed_weight.dtype,
+        )
+        if sampled_ids is not None:
+            take = sampled_ids.shape[0]
+            perm = torch.randperm(decoy_token_ids.shape[0], device=device)[:take]
+            decoy_token_ids[perm] = sampled_ids
+            if sampled_embed is None:
+                sampled_embed = F.embedding(sampled_ids, embed_weight)
+            decoy_embed_in[perm] = sampled_embed
 
     combined_embed_in = torch.cat([pred_embed_in, msa_embed_in, decoy_embed_in], dim=0)
     combined_mask = torch.cat([pred_mask, msa_mask_flat, msa_mask_flat], dim=0)
