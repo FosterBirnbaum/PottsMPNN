@@ -9,6 +9,16 @@ def alpha_schedule(epoch, step, start, end, warmup_epochs):
     return start + (end - start) * progress
 
 
+def decoy_real_fraction_schedule(step, start_step, end_step, max_fraction):
+    if max_fraction <= 0.0:
+        return 0.0
+    if end_step <= start_step:
+        return float(max_fraction)
+    progress = (step - start_step) / max(end_step - start_step, 1)
+    progress = min(max(progress, 0.0), 1.0)
+    return float(max_fraction) * progress
+
+
 def load_boltz2_checkpoint(checkpoint_path, device):
     from boltz.model.models.boltz2 import Boltz2
 
@@ -163,6 +173,7 @@ def main(args):
     )
     from boltz2_adapter import Boltz2TrunkAdapter, SequencePottsHead
     from struct_potts_losses import (
+        ESMCDecoySequencePool,
         potts_consistency_loss,
         msa_similarity_loss,
         msa_similarity_loss_esm,
@@ -261,6 +272,10 @@ def main(args):
     else:
         esm_is_esmc = False
 
+    esmc_decoy_pool = None
+    if esm_is_esmc:
+        esmc_decoy_pool = ESMCDecoySequencePool(max_size=args.esmc_decoy_pool_size)
+
     optimizer = get_std_opt(model, args.hidden_dim, args.warmup_steps)
 
     total_step = 0
@@ -358,6 +373,12 @@ def main(args):
                 potts_alpha = alpha_schedule(
                     epoch, total_step, args.alpha_start, args.alpha_end, args.alpha_warmup_epochs
                 )
+                decoy_real_fraction = decoy_real_fraction_schedule(
+                    total_step,
+                    args.esmc_decoy_real_start_step,
+                    args.esmc_decoy_real_end_step,
+                    args.esmc_decoy_real_max_fraction,
+                )
 
                 if args.mixed_precision:
                     with torch.cuda.amp.autocast():
@@ -388,6 +409,8 @@ def main(args):
                                     esm_token_map,
                                     margin=args.msa_margin,
                                     gumbel_temperature=args.esm_gumbel_temperature,
+                                    decoy_real_fraction=decoy_real_fraction,
+                                    decoy_pool=esmc_decoy_pool,
                                 )
                             else:
                                 loss_msa = msa_similarity_loss_esm(
@@ -459,6 +482,8 @@ def main(args):
                                 esm_token_map,
                                 margin=args.msa_margin,
                                 gumbel_temperature=args.esm_gumbel_temperature,
+                                decoy_real_fraction=decoy_real_fraction,
+                                decoy_pool=esmc_decoy_pool,
                             )
                         else:
                             loss_msa = msa_similarity_loss_esm(
@@ -685,6 +710,30 @@ if __name__ == "__main__":
         type=str,
         default="gumbel_st",
         choices=["gumbel_st", "potts_weighted"],
+    )
+    argparser.add_argument(
+        "--esmc_decoy_real_start_step",
+        type=int,
+        default=0,
+        help="Training step to start mixing real-sequence decoys into ESM-C loss.",
+    )
+    argparser.add_argument(
+        "--esmc_decoy_real_end_step",
+        type=int,
+        default=20000,
+        help="Training step where real-sequence decoy fraction reaches max.",
+    )
+    argparser.add_argument(
+        "--esmc_decoy_real_max_fraction",
+        type=float,
+        default=1.0,
+        help="Maximum fraction of ESM-C decoys drawn from real-sequence pool.",
+    )
+    argparser.add_argument(
+        "--esmc_decoy_pool_size",
+        type=int,
+        default=8192,
+        help="Max number of cached real decoy sequences per sequence length.",
     )
     argparser.add_argument(
         "--structure_loss_type",
