@@ -211,8 +211,8 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                     for idx in unique_idx:
                         idx = int(idx)
                         letter = chain_alphabet[idx]
-                        res = np.argwhere(idx_array == idx)
-                        initial_sequence= "".join(list(np.array(list(t['seq']))[res][0,]))
+                        res = np.where(idx_array == idx)[0]
+                        initial_sequence= "".join(list(np.array(list(t['seq']))[res]))
                         if "seqs" in t:
                             initial_sequence = t["seqs"][idx]
                         front_trim = 0
@@ -250,7 +250,7 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                         if res.shape[0] < 4:
                             pass
                         else:
-                            chain_seq = "".join(list(np.array(list(t['seq']))[res][0,]))
+                            chain_seq = "".join(list(np.array(list(t['seq']))[res]))
                             my_dict['seq_chain_'+letter]= chain_seq
                             if "seqs" in t:
                                 my_dict[f"msa_chain_{letter}"] = t["seqs"][idx]
@@ -262,10 +262,10 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                             else:
                                 visible_list.append(letter)
                             coords_dict_chain = {}
-                            all_atoms = np.array(t['xyz'][res,])[0,] #[L, 14, 3]
+                            all_atoms = np.array(t['xyz'][res,]) #[L, 14, 3]
                             concat_atom14.append(all_atoms)
                             if "mask" in t:
-                                concat_atom14_mask.append(np.array(t["mask"][res,])[0,])
+                                concat_atom14_mask.append(np.array(t["mask"][res,]))
                             else:
                                 concat_atom14_mask.append(np.ones(all_atoms.shape[:2], dtype=np.float32))
                             coords_dict_chain['N_chain_'+letter]=all_atoms[:,0,:].tolist()
