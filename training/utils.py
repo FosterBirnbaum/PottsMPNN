@@ -153,9 +153,35 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
     c1 = 0
     pdb_dict_list = []
     t0 = time.time()
+
+    def _to_numpy(value):
+        if torch.is_tensor(value):
+            return value.detach().cpu().numpy()
+        return np.asarray(value)
+
+    def _maybe_unbatch_value(value):
+        if torch.is_tensor(value):
+            if value.dim() > 0 and value.shape[0] == 1:
+                return value[0]
+            return value
+        if isinstance(value, np.ndarray):
+            if value.ndim > 0 and value.shape[0] == 1:
+                return value[0]
+            return value
+        if isinstance(value, (list, tuple)) and len(value) == 1:
+            return value[0]
+        return value
+
     for _ in range(repeat):
         for step,t in enumerate(data_loader):
-            t = {k:v[0] for k,v in t.items()}
+            if isinstance(t, (list, tuple)):
+                if len(t) == 0:
+                    continue
+                t = t[0]
+            if not isinstance(t, dict):
+                continue
+
+            t = {k: _maybe_unbatch_value(v) for k, v in t.items()}
             c1 += 1
             if 'label' in list(t):
                 my_dict = {}
@@ -173,10 +199,15 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                 coords_dict = {}
                 mask_list = []
                 visible_list = []
-                if len(list(np.unique(t['idx']))) < 352:
-                    for idx in list(np.unique(t['idx'])):
+                idx_array = _to_numpy(t['idx'])
+                unique_idx = list(np.unique(idx_array))
+                masked_set = set(_to_numpy(t['masked']).astype(int).tolist()) if 'masked' in t else set()
+
+                if len(unique_idx) < 352:
+                    for idx in unique_idx:
+                        idx = int(idx)
                         letter = chain_alphabet[idx]
-                        res = np.argwhere(t['idx']==idx)
+                        res = np.argwhere(idx_array == idx)
                         initial_sequence= "".join(list(np.array(list(t['seq']))[res][0,]))
                         if "seqs" in t:
                             initial_sequence = t["seqs"][idx]
@@ -222,7 +253,7 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                             concat_seq += chain_seq
                             chain_order.append(letter)
                             chain_lengths.append(len(chain_seq))
-                            if idx in t['masked']:
+                            if idx in masked_set:
                                 mask_list.append(letter)
                             else:
                                 visible_list.append(letter)
