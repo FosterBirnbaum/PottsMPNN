@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 import typing as T
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 import sys
 
@@ -52,7 +52,7 @@ class FoldingTrunkConfig:
     layer_drop: float = 0
     cpu_grad_checkpoint: bool = False
     use_weights: bool = False
-    trunk_backend: str = "esmfold"
+    trunk_backend: str = "boltz2"
 
     max_recycles: int = 4
     chunk_size: T.Optional[int] = None
@@ -139,23 +139,7 @@ class FoldingTrunk(nn.Module):
 
         self.pairwise_positional_embedding = RelativePosition(self.cfg.position_bins, c_z)
 
-        if self.cfg.trunk_backend == "esmfold":
-            from esm.esmfold.v1.tri_self_attn_block import TriangularSelfAttentionBlock
-
-            self.blocks = nn.ModuleList(
-                [
-                    TriangularSelfAttentionBlock(
-                        sequence_state_dim=c_s,
-                        pairwise_state_dim=c_z,
-                        sequence_head_width=self.cfg.sequence_head_width,
-                        pairwise_head_width=self.cfg.pairwise_head_width,
-                        dropout=self.cfg.dropout,
-                        inf=torch.finfo(torch.float32).max,
-                    )
-                    for _ in range(self.cfg.num_blocks)
-                ]
-            )
-        elif self.cfg.trunk_backend == "boltz2":
+        if self.cfg.trunk_backend == "boltz2":
             from boltz.model.modules.trunk import PairformerLayer
 
             self.blocks = nn.ModuleList(
@@ -174,7 +158,7 @@ class FoldingTrunk(nn.Module):
         else:
             raise ValueError(
                 f"Unsupported trunk backend: {self.cfg.trunk_backend}. "
-                "Expected one of {'esmfold', 'boltz2'}."
+                "Expected one of {'boltz2'}."
             )
 
         if not self.cfg.use_weights:
@@ -188,7 +172,10 @@ class FoldingTrunk(nn.Module):
         self.recycle_disto = nn.Embedding(self.recycle_bins, c_z)
         self.recycle_disto.weight[0].detach().zero_()
 
-        self.structure_module = StructureModule(**self.cfg.structure_module)  # type: ignore
+        structure_module_cfg = self.cfg.structure_module
+        if is_dataclass(structure_module_cfg):
+            structure_module_cfg = asdict(structure_module_cfg)
+        self.structure_module = StructureModule(**structure_module_cfg)  # type: ignore[arg-type]
         self.trunk2sm_s = nn.Linear(c_s, self.structure_module.c_s)
         self.trunk2sm_z = nn.Linear(c_z, self.structure_module.c_z)
 
@@ -243,23 +230,14 @@ class FoldingTrunk(nn.Module):
             pair_mask = mask[:, :, None] * mask[:, None, :]
 
             for block in self.blocks:
-                if self.cfg.trunk_backend == "esmfold":
-                    s, z = block(
-                        s,
-                        z,
-                        mask=mask,
-                        residue_index=residx,
-                        chunk_size=self.chunk_size,
-                    )
-                else:
-                    s, z = block(
-                        s,
-                        z,
-                        mask=mask,
-                        pair_mask=pair_mask,
-                        chunk_size_tri_attn=self.chunk_size,
-                        use_kernels=False,
-                    )
+                s, z = block(
+                    s,
+                    z,
+                    mask=mask,
+                    pair_mask=pair_mask,
+                    chunk_size_tri_attn=self.chunk_size,
+                    use_kernels=False,
+                )
             return s, z
 
         s_s = s_s_0

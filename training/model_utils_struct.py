@@ -19,7 +19,8 @@ import random
 import itertools
 import re
 from etab_utils import merge_duplicate_pairE, expand_etab
-from training.trunk import FoldingTrunk
+from dataclasses import asdict
+from training.trunk import FoldingTrunk, FoldingTrunkConfig
 
 def char_to_1hot(char):
     ALPHABET='ACDEFGHIKLMNPQRSTVWY-X'
@@ -1282,7 +1283,7 @@ class MultiLayerLinear(nn.Module):
 class ProteinMPNN(nn.Module):
     def __init__(self, num_letters=21, node_features=128, edge_features=128,
         hidden_dim=128, output_dim=400, num_encoder_layers=3, num_decoder_layers=3, seq_encoding='one_hot',
-        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True, struct_trunk_backend='esmfold'):
+        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True, struct_trunk_backend='boltz2'):
         super(ProteinMPNN, self).__init__()
         # Hyperparameters
         self.node_features = node_features
@@ -1335,16 +1336,16 @@ class ProteinMPNN(nn.Module):
         if self.struct_predict: # Load structure module if needed               
             url = "https://dl.fbaipublicfiles.com/fair-esm/models/esmfold_structure_module_only_650M.pt"
             model_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu")
-            cfg = model_data["cfg"]["model"]
-            
+
+            trunk_cfg = asdict(FoldingTrunkConfig())
             if not self.use_struct_weights and self.multimer_structure_module:
-                cfg.trunk['structure_module']['is_multimer'] = True
+                trunk_cfg["structure_module"]["is_multimer"] = True
 
             if self.use_struct_weights:
-                cfg.trunk['use_weights'] = True
+                trunk_cfg["use_weights"] = True
 
-            cfg.trunk['trunk_backend'] = self.struct_trunk_backend
-            struct_module = FoldingTrunk(**cfg.trunk).to(device)
+            trunk_cfg["trunk_backend"] = self.struct_trunk_backend
+            struct_module = FoldingTrunk(**trunk_cfg).to(device)
             if self.use_struct_weights:
                 self.node_struct_reshape = nn.Linear(num_letters, 1024)
                 self.edge_struct_reshape = nn.Linear(output_dim, 128)
@@ -1362,8 +1363,7 @@ class ProteinMPNN(nn.Module):
                     if param in module_params:
                         state_dict[param] = val   
                 missing, unexpected = struct_module.load_state_dict(state_dict, strict=False)
-                if self.struct_trunk_backend != 'esmfold':
-                    print(f'Structure trunk backend {self.struct_trunk_backend}: loaded {len(state_dict)} params from ESMFold checkpoint; missing={len(missing)}, unexpected={len(unexpected)}')
+                print(f'Structure trunk backend {self.struct_trunk_backend}: loaded {len(state_dict)} params from ESMFold checkpoint; missing={len(missing)}, unexpected={len(unexpected)}')
             else:
                 print('Not using structure weights')
             
