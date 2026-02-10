@@ -247,6 +247,7 @@ def main(args):
         use_potts=True,
         struct_predict=True,
         struct_use_decoder_one_hot=True,
+        struct_trunk_backend=args.struct_trunk_backend,
     )
     model.to(device)
 
@@ -678,6 +679,14 @@ if __name__ == "__main__":
 
     argparser.add_argument("--boltz2_checkpoint", type=str, required=True)
     argparser.add_argument("--boltz2_recycles", type=int, default=1)
+
+    argparser.add_argument(
+        "--struct_trunk_backend",
+        type=str,
+        default="boltz2",
+        choices=["esmfold", "boltz2"],
+        help="Structure trunk backend used inside ProteinMPNN's folding module.",
+    )
     argparser.add_argument("--potts_dim", type=int, default=400)
 
     argparser.add_argument("--alpha_start", type=float, default=1.0)

@@ -5,12 +5,17 @@
 import typing as T
 from contextlib import ExitStack
 from dataclasses import dataclass
+from pathlib import Path
+import sys
 
 import torch
 import torch.nn as nn
 from openfold.model.structure_module import StructureModule
 
-from esm.esmfold.v1.tri_self_attn_block import TriangularSelfAttentionBlock
+_BOLTZ2_SRC = Path(__file__).resolve().parents[1] / "boltz2" / "src"
+if str(_BOLTZ2_SRC) not in sys.path:
+    sys.path.insert(0, str(_BOLTZ2_SRC))
+
 
 @dataclass
 class StructureModuleConfig:
@@ -47,6 +52,7 @@ class FoldingTrunkConfig:
     layer_drop: float = 0
     cpu_grad_checkpoint: bool = False
     use_weights: bool = False
+    trunk_backend: str = "esmfold"
 
     max_recycles: int = 4
     chunk_size: T.Optional[int] = None
@@ -128,23 +134,48 @@ class FoldingTrunk(nn.Module):
 
         assert c_s % self.cfg.sequence_head_width == 0
         assert c_z % self.cfg.pairwise_head_width == 0
-        block = TriangularSelfAttentionBlock
+        pairwise_num_heads = c_z // self.cfg.pairwise_head_width
+        sequence_num_heads = c_s // self.cfg.sequence_head_width
 
         self.pairwise_positional_embedding = RelativePosition(self.cfg.position_bins, c_z)
 
-        self.blocks = nn.ModuleList(
-            [
-                block(
-                    sequence_state_dim=c_s,
-                    pairwise_state_dim=c_z,
-                    sequence_head_width=self.cfg.sequence_head_width,
-                    pairwise_head_width=self.cfg.pairwise_head_width,
-                    dropout=self.cfg.dropout,
-                    inf=torch.finfo(torch.float32).max,
-                )
-                for i in range(self.cfg.num_blocks)
-            ]
-        )
+        if self.cfg.trunk_backend == "esmfold":
+            from esm.esmfold.v1.tri_self_attn_block import TriangularSelfAttentionBlock
+
+            self.blocks = nn.ModuleList(
+                [
+                    TriangularSelfAttentionBlock(
+                        sequence_state_dim=c_s,
+                        pairwise_state_dim=c_z,
+                        sequence_head_width=self.cfg.sequence_head_width,
+                        pairwise_head_width=self.cfg.pairwise_head_width,
+                        dropout=self.cfg.dropout,
+                        inf=torch.finfo(torch.float32).max,
+                    )
+                    for _ in range(self.cfg.num_blocks)
+                ]
+            )
+        elif self.cfg.trunk_backend == "boltz2":
+            from boltz.model.modules.trunk import PairformerLayer
+
+            self.blocks = nn.ModuleList(
+                [
+                    PairformerLayer(
+                        token_s=c_s,
+                        token_z=c_z,
+                        num_heads=sequence_num_heads,
+                        dropout=self.cfg.dropout,
+                        pairwise_head_width=self.cfg.pairwise_head_width,
+                        pairwise_num_heads=pairwise_num_heads,
+                    )
+                    for _ in range(self.cfg.num_blocks)
+                ]
+            )
+        else:
+            raise ValueError(
+                f"Unsupported trunk backend: {self.cfg.trunk_backend}. "
+                "Expected one of {'esmfold', 'boltz2'}."
+            )
 
         if not self.cfg.use_weights:
             self.reshape_s = nn.Linear(21, c_s)
@@ -209,9 +240,26 @@ class FoldingTrunk(nn.Module):
 
         def trunk_iter(s, z, residx, mask):
             z = z + self.pairwise_positional_embedding(residx, mask=mask)
+            pair_mask = mask[:, :, None] * mask[:, None, :]
 
             for block in self.blocks:
-                s, z = block(s, z, mask=mask, residue_index=residx, chunk_size=self.chunk_size)
+                if self.cfg.trunk_backend == "esmfold":
+                    s, z = block(
+                        s,
+                        z,
+                        mask=mask,
+                        residue_index=residx,
+                        chunk_size=self.chunk_size,
+                    )
+                else:
+                    s, z = block(
+                        s,
+                        z,
+                        mask=mask,
+                        pair_mask=pair_mask,
+                        chunk_size_tri_attn=self.chunk_size,
+                        use_kernels=False,
+                    )
             return s, z
 
         s_s = s_s_0
