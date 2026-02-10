@@ -22,6 +22,7 @@ from omegaconf import OmegaConf
 
 from potts_mpnn_utils import PottsMPNN, parse_PDB
 from run_utils import chain_to_partition_map, inter_partition_contact_mask, score_seqs
+from pareto_utils import pareto_front_2d, pareto_prefilter_mask
 
 AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
 MAX_SEQS_PER_BATCH = 1_000_000
@@ -500,25 +501,8 @@ def _rrf_scores(stability_ranks: np.ndarray, binding_ranks: np.ndarray, rrf_k: i
 
 
 def _pareto_front(stability_scores: np.ndarray, binding_scores: np.ndarray) -> np.ndarray:
-    n = len(stability_scores)
-    front = np.ones(n, dtype=bool)
-    for i in range(n):
-        if not front[i]:
-            continue
-        for j in range(n):
-            if i == j or not front[i]:
-                continue
-            if (
-                stability_scores[j] <= stability_scores[i]
-                and binding_scores[j] <= binding_scores[i]
-                and (
-                    stability_scores[j] < stability_scores[i]
-                    or binding_scores[j] < binding_scores[i]
-                )
-            ):
-                front[i] = False
-                break
-    return front
+    """Compute a 2-objective Pareto front in O(n log n)."""
+    return pareto_front_2d(stability_scores, binding_scores)
 
 
 def _normalize_amino_acids(amino_acids: Optional[Iterable[str]]) -> Optional[List[str]]:
@@ -549,6 +533,7 @@ def recursive_mutation_search(
     per_position_quota: Optional[int] = None,
     allowed_from_aas: Optional[Iterable[str]] = None,
     allowed_to_aas: Optional[Iterable[str]] = None,
+    pareto_prefilter_percentile: Optional[float] = None,
 ) -> Dict[int, pd.DataFrame]:
     """Search mutations iteratively and return the top percent at each depth.
 
@@ -615,6 +600,8 @@ def recursive_mutation_search(
         raise ValueError("max_keep_per_depth must be >= 1.")
     if per_position_quota is not None and per_position_quota < 1:
         raise ValueError("per_position_quota must be >= 1 when provided.")
+    if pareto_prefilter_percentile is not None and not (0.0 < pareto_prefilter_percentile <= 100.0):
+        raise ValueError("pareto_prefilter_percentile must be in (0, 100].")
 
     model, cfg = load_model_from_config(cfg_path)
     pdb_path_list = [pdb_paths] if isinstance(pdb_paths, str) else list(pdb_paths)
@@ -737,7 +724,19 @@ def recursive_mutation_search(
             data["stability_score"] = [float(stability_scores[idx]) for idx in kept_indices]
             data["binding_score"] = [float(binding_scores[idx]) for idx in kept_indices]
             if show_pareto_front:
-                pareto_flags = _pareto_front(stability_scores, binding_scores)
+                prefilter_mask = pareto_prefilter_mask(
+                    stability_scores,
+                    binding_scores,
+                    pareto_prefilter_percentile,
+                )
+                pareto_flags = np.zeros(len(stability_scores), dtype=bool)
+                if prefilter_mask.any():
+                    candidate_indices = np.flatnonzero(prefilter_mask)
+                    reduced_flags = _pareto_front(
+                        stability_scores[candidate_indices],
+                        binding_scores[candidate_indices],
+                    )
+                    pareto_flags[candidate_indices] = reduced_flags
                 data["pareto_front"] = [bool(pareto_flags[idx]) for idx in kept_indices]
 
         results[depth] = pd.DataFrame(data)
