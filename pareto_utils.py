@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
-
+from tqdm import tqdm
 import numpy as np
 
 
@@ -26,11 +26,12 @@ def pareto_front_2d(stability_scores: np.ndarray, binding_scores: np.ndarray) ->
     best_binding = np.inf
 
     i = 0
+    pbar = tqdm(total=n, desc="Computing Pareto front")
     while i < n:
         j = i + 1
         while j < n and stable_sorted[j] == stable_sorted[i] and bind_sorted[j] == bind_sorted[i]:
             j += 1
-
+        
         current_binding = bind_sorted[i]
         is_dominated = current_binding > best_binding
         if is_dominated:
@@ -40,6 +41,8 @@ def pareto_front_2d(stability_scores: np.ndarray, binding_scores: np.ndarray) ->
             best_binding = current_binding
 
         i = j
+        pbar.update(j-i)
+    pbar.close()
 
     front = np.zeros(n, dtype=bool)
     front[order] = front_sorted
