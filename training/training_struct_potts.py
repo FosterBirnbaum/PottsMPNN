@@ -51,28 +51,19 @@ def load_esm_model(model_name, device):
 
     if model_name.startswith("esmc"):
         try:
-            from esm import pretrained
+            from esm.models.esmc import ESMC
         except Exception as exc:  # pragma: no cover - import guard
             raise ImportError(
                 "ESM-C models require the evolutionaryscale/esm package."
             ) from exc
 
-        model_factory = getattr(pretrained, model_name, None)
-        if model_factory is None:
-            raise ValueError(
-                f"Unknown ESM-C model '{model_name}'. Ensure the name matches the "
-                "evolutionaryscale/esm pretrained API."
-            )
-        esm_model = model_factory()
+        esm_model = ESMC.from_pretrained(model_name)
         esm_model = esm_model.to(device)
         esm_model.eval()
         for param in esm_model.parameters():
             param.requires_grad = False
 
         esm_tokenizer = getattr(esm_model, "tokenizer", None)
-        if esm_tokenizer is None:
-            get_tokenizer = getattr(pretrained, "get_tokenizer", None)
-            esm_tokenizer = get_tokenizer(model_name) if get_tokenizer else None
         if esm_tokenizer is None:
             raise RuntimeError(
                 "Unable to locate an ESM-C tokenizer for token mapping."
