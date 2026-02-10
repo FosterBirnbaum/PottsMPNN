@@ -684,7 +684,7 @@ if __name__ == "__main__":
         "--struct_trunk_backend",
         type=str,
         default="boltz2",
-        choices=["esmfold", "boltz2"],
+        choices=["boltz2"],
         help="Structure trunk backend used inside ProteinMPNN's folding module.",
     )
     argparser.add_argument("--potts_dim", type=int, default=400)
