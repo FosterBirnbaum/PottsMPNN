@@ -44,6 +44,23 @@ def str_to_list(s):
     
     return re.findall(pattern, s)
 
+
+def _batch_entry_name(batch_entry, index=0):
+    """Return a stable sample name even when `name` is missing from batch entries."""
+    if batch_entry.get('name') is not None:
+        return str(batch_entry['name'])
+
+    for key in ('label', 'id', 'pdb_id', 'pdb', 'uid'):
+        value = batch_entry.get(key)
+        if value is not None:
+            return str(value)
+
+    seq = batch_entry.get('seq')
+    if isinstance(seq, str) and seq:
+        return f"sample_{index}_{seq[:16]}"
+
+    return f"sample_{index}"
+
 def _esm_featurize(seq, chain_lens, esm, batch_converter, esm_embed_layer, device, one_hot=False, linker_length=25):
     with torch.no_grad():
         esm_data = []
@@ -76,7 +93,8 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         visible_chains = batch[0]['visible_list']
         all_chains = masked_chains + visible_chains
         all_seq = ''
-        random.seed(epoch + np.sum([ord(char) for char in batch[0]['name']]))
+        sample_name = _batch_entry_name(batch[0], 0)
+        random.seed(epoch + np.sum([ord(char) for char in sample_name]))
         for chain_letter in all_chains:
             chain_seqs = batch[0][f'seq_chain_{chain_letter}']
             if isinstance(chain_seqs, str):
@@ -131,7 +149,8 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         openfold_backbones = []
         
     for i, b in enumerate(batch):
-        names.append(b['name'])
+        sample_name = _batch_entry_name(b, i)
+        names.append(sample_name)
         chain_lens = []
         masked_chains = b['masked_list']
         visible_chains = b['visible_list']
@@ -214,7 +233,7 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
             x = np.concatenate(x_chain_list,0) #[L, 4, 3]
         except:
             with open('/orcd/scratch/orcd/001/fosterb/pmpnn_experiments/protein_mpnn_potts_ing_consensus_R1/log_out2.txt', 'w') as f:
-                f.write(b['name'] + '\n')
+                f.write(sample_name + '\n')
                 f.write(all_chains)
                 f.write(visible_chains)
                 f.write(str(chain_coords))
@@ -239,7 +258,7 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
             X[i,:,:,:] = x_pad
         except Exception as e:
             with open('/orcd/scratch/orcd/001/fosterb/pmpnn_experiments/protein_mpnn_potts_pdb_msa_50_20_20_batch_20_R3/log_mutils.txt', 'a') as f:
-                f.write(b['name'] + '\n')
+                f.write(sample_name + '\n')
                 f.write(all_sequence + '\n')
                 f.write(str(len(all_sequence)) + '\n')
                 f.write(str(X.shape) + '\n')
