@@ -1282,7 +1282,7 @@ class MultiLayerLinear(nn.Module):
 class ProteinMPNN(nn.Module):
     def __init__(self, num_letters=21, node_features=128, edge_features=128,
         hidden_dim=128, output_dim=400, num_encoder_layers=3, num_decoder_layers=3, seq_encoding='one_hot',
-        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True):
+        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True, struct_trunk_backend='esmfold'):
         super(ProteinMPNN, self).__init__()
         # Hyperparameters
         self.node_features = node_features
@@ -1298,6 +1298,7 @@ class ProteinMPNN(nn.Module):
         self.struct_use_decoder_one_hot = struct_use_decoder_one_hot
         self.struct_one_hot_temperature = struct_one_hot_temperature
         self.struct_one_hot_straight_through = struct_one_hot_straight_through
+        self.struct_trunk_backend = struct_trunk_backend
 
         self.features = ProteinFeatures(node_features, edge_features, top_k=k_neighbors, augment_eps=augment_eps, augment_type=augment_type, feat_type=feat_type, augment_lim=augment_lim)
         self.W_e = nn.Linear(edge_features, hidden_dim, bias=True)
@@ -1342,6 +1343,7 @@ class ProteinMPNN(nn.Module):
             if self.use_struct_weights:
                 cfg.trunk['use_weights'] = True
 
+            cfg.trunk['trunk_backend'] = self.struct_trunk_backend
             struct_module = FoldingTrunk(**cfg.trunk).to(device)
             if self.use_struct_weights:
                 self.node_struct_reshape = nn.Linear(num_letters, 1024)
@@ -1359,7 +1361,9 @@ class ProteinMPNN(nn.Module):
                         param = '.'.join(param.split('.')[:-1]) + '.linear.' + param.split('.')[-1]
                     if param in module_params:
                         state_dict[param] = val   
-                struct_module.load_state_dict(state_dict)
+                missing, unexpected = struct_module.load_state_dict(state_dict, strict=False)
+                if self.struct_trunk_backend != 'esmfold':
+                    print(f'Structure trunk backend {self.struct_trunk_backend}: loaded {len(state_dict)} params from ESMFold checkpoint; missing={len(missing)}, unexpected={len(unexpected)}')
             else:
                 print('Not using structure weights')
             
