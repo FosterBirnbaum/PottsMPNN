@@ -10,6 +10,7 @@ import os
 class StructureDataset():
     def __init__(self, pdb_dict_list, verbose=True, truncate=None, max_length=100,
         alphabet='ACDEFGHIKLMNPQRSTVWYX'):
+        pdb_dict_list = self._normalize_entries(pdb_dict_list)
         alphabet_set = set([a for a in alphabet])
         discard_count = {
             'bad_chars': 0,
@@ -22,7 +23,7 @@ class StructureDataset():
         start = time.time()
         for i, entry in enumerate(pdb_dict_list):
             seq = entry['seq']
-            name = entry['name']
+            name = entry.get('name', entry.get('label', f'entry_{i}'))
 
             bad_chars = set([s for s in seq]).difference(alphabet_set)
             if len(bad_chars) == 0:
@@ -48,6 +49,47 @@ class StructureDataset():
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+    @staticmethod
+    def _normalize_entries(pdb_input):
+        """Normalize dataset input into a list of per-structure dictionaries.
+
+        Accepts:
+        - list/tuple of dict entries (standard usage)
+        - single dict entry
+        - dict-of-batched-fields from torch DataLoader default collate
+        """
+        if isinstance(pdb_input, dict):
+            seq_value = pdb_input.get('seq', None)
+
+            # Single structure dictionary.
+            if isinstance(seq_value, str):
+                return [pdb_input]
+
+            # DataLoader batch_size=1 default-collated dictionary.
+            if isinstance(seq_value, (list, tuple)) and len(seq_value) == 1:
+                entry = {}
+                for key, value in pdb_input.items():
+                    if isinstance(value, (list, tuple)) and len(value) == 1:
+                        entry[key] = value[0]
+                    elif torch.is_tensor(value) and value.shape[0] == 1:
+                        entry[key] = value[0]
+                    else:
+                        entry[key] = value
+                if isinstance(entry.get('seq', None), str):
+                    return [entry]
+
+            raise TypeError(
+                "StructureDataset received a dictionary that is neither a "
+                "single-entry structure dict nor a batch_size=1 collated dict."
+            )
+
+        if isinstance(pdb_input, (list, tuple)):
+            return list(pdb_input)
+
+        raise TypeError(
+            "StructureDataset expects a list/tuple of dictionaries or a single dictionary."
+        )
 
 
 class StructureLoader():
