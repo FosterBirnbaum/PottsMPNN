@@ -356,14 +356,48 @@ def msa_similarity_loss_esm(
     return F.relu(pos_loss - decoy_loss + margin)
 
 
+def _select_structure_positions(positions, batch_size):
+    """Normalize struct-module position tensors to [B, L, A, 3]."""
+    if positions is None:
+        return None
+
+    # Typical shape from OpenFold-style struct modules: [T, B, L, A, 3].
+    if positions.ndim == 5:
+        if positions.shape[1] == batch_size:
+            return positions[-1]
+        # Alternate ordering occasionally used in debugging utilities: [B, T, L, A, 3].
+        if positions.shape[0] == batch_size:
+            return positions[:, -1]
+        raise ValueError(
+            "Could not infer batch dimension for positions with shape "
+            f"{tuple(positions.shape)} and batch_size={batch_size}."
+        )
+
+    if positions.ndim == 4:
+        return positions
+
+    if positions.ndim == 3:
+        return positions[:, :, None, :]
+
+    raise ValueError(f"Unexpected positions rank: {positions.ndim}")
+
+
 def structure_consistency_loss(positions, X, mask, atom_index=1):
-    """Backbone structure loss using a single atom index (default CA)."""
+    """Backbone structure loss using one atom (default CA) from the final struct step."""
     if positions is None:
         return torch.tensor(0.0, device=X.device)
-    if positions.ndim == 4:
-        pred = positions[:, :, atom_index]
-    else:
-        pred = positions
+
+    pred_all = _select_structure_positions(positions, batch_size=X.shape[0])
+    if pred_all is None:
+        return torch.tensor(0.0, device=X.device)
+
+    if pred_all.shape[-2] <= atom_index or X.shape[-2] <= atom_index:
+        raise ValueError(
+            f"atom_index={atom_index} out of bounds for pred atoms={pred_all.shape[-2]} "
+            f"or target atoms={X.shape[-2]}"
+        )
+
+    pred = pred_all[:, :, atom_index]
     target = X[:, :, atom_index]
     diff = (pred - target) * mask[..., None]
     return diff.pow(2).sum() / (mask.sum() + 1e-6)
