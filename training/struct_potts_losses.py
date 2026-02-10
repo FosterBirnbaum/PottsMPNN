@@ -1,7 +1,7 @@
 """Loss utilities for structure↔sequence Potts autoencoder training."""
 
 from __future__ import annotations
-
+from openfold.utils.loss import backbone_loss_per_frame
 import torch
 import torch.nn.functional as F
 
@@ -374,7 +374,7 @@ def structure_fape_loss(frames, backbone_4x4, mask):
     if frames is None or backbone_4x4 is None or backbone_4x4.numel() == 0:
         return torch.tensor(0.0, device=mask.device)
     # OpenFold provides a reference FAPE implementation.
-    from openfold.utils.loss import backbone_loss_per_frame
+    
 
     loss, _ = backbone_loss_per_frame(backbone_4x4, mask, traj=frames[-1])
     if loss.isnan().item():

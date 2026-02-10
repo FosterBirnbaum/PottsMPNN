@@ -6,6 +6,7 @@ import numpy as np
 import time
 import random
 import os
+from training.boltz2_features import build_boltz2_item_feats, collate_boltz2_feats
 
 class StructureDataset():
     def __init__(self, pdb_dict_list, verbose=True, truncate=None, max_length=100,
@@ -105,6 +106,11 @@ class StructureLoader():
         clusters, batch = [], []
         batch_max = 0
         for ix in sorted_ix:
+            if self.batch_size == 1 or self.lengths[ix] > self.batch_size:
+                batch.append(ix)
+                clusters.append(batch)
+                batch, batch_max = [], 0
+                continue
             size = self.lengths[ix]
             if size * (len(batch) + 1) <= self.batch_size:
                 batch.append(ix)
@@ -123,7 +129,6 @@ class StructureLoader():
         np.random.shuffle(self.clusters)
         for b_idx in self.clusters:
             batch = [self.dataset[i] for i in b_idx]
-            from boltz2_features import build_boltz2_item_feats, collate_boltz2_feats
 
             try:
                 boltz2_items = [build_boltz2_item_feats(item) for item in batch]
