@@ -18,7 +18,6 @@ import torch.nn.functional as F
 import random
 import itertools
 import re
-from graph_feat import MultiChainProteinFeatures as CoordFeatures
 from etab_utils import merge_duplicate_pairE, expand_etab
 
 def char_to_1hot(char):
@@ -1249,10 +1248,6 @@ class ProteinFeatures(nn.Module):
             E = torch.cat((E_positional, RBF_all), -1)
             E = self.edge_embedding(E)
             E = self.norm_edges(E)
-        elif self.feat_type == 'coordinator':
-            raise ValueError
-            featurizer = CoordFeatures(self.edge_features, self.node_features)
-            _, E, E_idx = featurizer(X, chain_labels, mask)
         return E, E_idx
 
 def gelu(x):
