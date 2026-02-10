@@ -19,6 +19,7 @@ import random
 import itertools
 import re
 from etab_utils import merge_duplicate_pairE, expand_etab
+from training.trunk import FoldingTrunk
 
 def char_to_1hot(char):
     ALPHABET='ACDEFGHIKLMNPQRSTVWY-X'
@@ -1331,7 +1332,6 @@ class ProteinMPNN(nn.Module):
             self.clone = clone
 
         if self.struct_predict: # Load structure module if needed               
-            from trunk import FoldingTrunk
             url = "https://dl.fbaipublicfiles.com/fair-esm/models/esmfold_structure_module_only_650M.pt"
             model_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu")
             cfg = model_data["cfg"]["model"]
