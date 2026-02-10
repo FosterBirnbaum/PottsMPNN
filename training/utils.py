@@ -161,14 +161,18 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
 
     def _maybe_unbatch_value(value):
         if torch.is_tensor(value):
+            print("value tensor shape: ", value.shape)
             if value.dim() > 0 and value.shape[0] == 1:
                 return value[0]
             return value
         if isinstance(value, np.ndarray):
+            print("value numpy shape: ", value.shape)
             if value.ndim > 0 and value.shape[0] == 1:
                 return value[0]
             return value
         if isinstance(value, (list, tuple)) and len(value) == 1:
+            print("value list/tuple length: ", len(value))
+            print(value)
             return value[0]
         return value
 

@@ -159,6 +159,8 @@ def build_boltz2_item_feats(item: dict) -> dict[str, torch.Tensor]:
         dtype=torch.long,
     )
     atom_backbone_feat = one_hot(backbone_feat_index, num_classes=_BACKBONE_DIM)
+    print('length: ', length)
+    print('seq: ', seq)
     atom_to_token = one_hot(
         torch.arange(length, dtype=torch.long), num_classes=length
     ).float()
