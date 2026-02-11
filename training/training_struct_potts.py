@@ -31,28 +31,19 @@ def load_boltz2_checkpoint(checkpoint_path, device):
     if not isinstance(diffusion_process_args, dict):
         return Boltz2.load_from_checkpoint(checkpoint_path, map_location=device)
 
-    allowed_keys = {
-        "num_sampling_steps",
-        "sigma_min",
-        "sigma_max",
-        "sigma_data",
-        "rho",
-        "P_mean",
-        "P_std",
-        "gamma_0",
-        "gamma_min",
-        "noise_scale",
-        "step_scale",
-        "step_scale_random",
-        "coordinate_augmentation",
-        "coordinate_augmentation_inference",
-        "alignment_reverse_diff",
-        "synchronize_sigmas",
+    import inspect
+
+    from boltz.model.modules.diffusionv2 import AtomDiffusion
+
+    accepted_diffusion_keys = {
+        name
+        for name in inspect.signature(AtomDiffusion.__init__).parameters
+        if name not in {"self", "score_model_args"}
     }
     filtered_diffusion_args = {
         key: value
         for key, value in diffusion_process_args.items()
-        if key in allowed_keys
+        if key in accepted_diffusion_keys
     }
 
     return Boltz2.load_from_checkpoint(
