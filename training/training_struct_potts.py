@@ -20,9 +20,46 @@ def decoy_real_fraction_schedule(step, start_step, end_step, max_fraction):
 
 
 def load_boltz2_checkpoint(checkpoint_path, device):
+    import torch
+
     from boltz.model.models.boltz2 import Boltz2
 
-    return Boltz2.load_from_checkpoint(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    hparams = checkpoint.get("hyper_parameters", {})
+
+    diffusion_process_args = hparams.get("diffusion_process_args")
+    if not isinstance(diffusion_process_args, dict):
+        return Boltz2.load_from_checkpoint(checkpoint_path, map_location=device)
+
+    allowed_keys = {
+        "num_sampling_steps",
+        "sigma_min",
+        "sigma_max",
+        "sigma_data",
+        "rho",
+        "P_mean",
+        "P_std",
+        "gamma_0",
+        "gamma_min",
+        "noise_scale",
+        "step_scale",
+        "step_scale_random",
+        "coordinate_augmentation",
+        "coordinate_augmentation_inference",
+        "alignment_reverse_diff",
+        "synchronize_sigmas",
+    }
+    filtered_diffusion_args = {
+        key: value
+        for key, value in diffusion_process_args.items()
+        if key in allowed_keys
+    }
+
+    return Boltz2.load_from_checkpoint(
+        checkpoint_path,
+        map_location=device,
+        diffusion_process_args=filtered_diffusion_args,
+    )
 
 
 def get_boltz2_feats(batch):
