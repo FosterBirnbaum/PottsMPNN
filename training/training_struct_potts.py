@@ -24,7 +24,7 @@ def load_boltz2_checkpoint(checkpoint_path, device):
 
     from boltz.model.models.boltz2 import Boltz2
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     hparams = checkpoint.get("hyper_parameters", {})
 
     diffusion_process_args = hparams.get("diffusion_process_args")
