@@ -61,6 +61,7 @@ def get_boltz2_feats(batch):
 def validate_boltz2_alignment(boltz2_feats, seq_mask, atoms_per_window_queries: int = 32):
     token_mask = boltz2_feats.get("token_pad_mask")
     msa = boltz2_feats.get("msa")
+    msa_vocab22 = boltz2_feats.get("msa_vocab22")
     ref_pos = boltz2_feats.get("ref_pos")
     atom_pad_mask = boltz2_feats.get("atom_pad_mask")
     atom_to_token = boltz2_feats.get("atom_to_token")
@@ -81,6 +82,14 @@ def validate_boltz2_alignment(boltz2_feats, seq_mask, atoms_per_window_queries: 
             f"Boltz2 MSA length {msa.shape[-1]} does not match "
             f"sequence length {seq_mask.shape[1]}."
         )
+    if msa_vocab22 is not None:
+        if msa_vocab22.shape != msa.shape:
+            raise ValueError(
+                f"Boltz2 msa_vocab22 shape {msa_vocab22.shape} must match msa shape {msa.shape}."
+            )
+        max_id = int(msa_vocab22.max().item()) if msa_vocab22.numel() > 0 else 0
+        if max_id >= 22:
+            raise ValueError(f"msa_vocab22 contains token id {max_id}, expected < 22.")
     if ref_pos is None or atom_pad_mask is None or atom_to_token is None:
         raise KeyError(
             "Boltz2 features missing one of: ref_pos, atom_pad_mask, atom_to_token."
@@ -458,7 +467,7 @@ def main(args):
                             if esm_is_esmc:
                                 loss_msa = msa_similarity_loss_esmc(
                                     log_probs,
-                                    boltz2_feats["msa"],
+                                    boltz2_feats["msa_vocab22"],
                                     boltz2_feats["msa_mask"],
                                     mask,
                                     esm_model,
@@ -471,7 +480,7 @@ def main(args):
                             else:
                                 loss_msa = msa_similarity_loss_esm(
                                     log_probs,
-                                    boltz2_feats["msa"],
+                                    boltz2_feats["msa_vocab22"],
                                     boltz2_feats["msa_mask"],
                                     mask,
                                     esm_model,
@@ -483,7 +492,7 @@ def main(args):
                         else:
                             loss_msa = msa_similarity_loss(
                                 log_probs,
-                                boltz2_feats["msa"],
+                                boltz2_feats["msa_vocab22"],
                                 boltz2_feats["msa_mask"],
                                 mask,
                                 margin=args.msa_margin,
@@ -531,7 +540,7 @@ def main(args):
                         if esm_is_esmc:
                             loss_msa = msa_similarity_loss_esmc(
                                 log_probs,
-                                boltz2_feats["msa"],
+                                boltz2_feats["msa_vocab22"],
                                 boltz2_feats["msa_mask"],
                                 mask,
                                 esm_model,
@@ -544,7 +553,7 @@ def main(args):
                         else:
                             loss_msa = msa_similarity_loss_esm(
                                 log_probs,
-                                boltz2_feats["msa"],
+                                boltz2_feats["msa_vocab22"],
                                 boltz2_feats["msa_mask"],
                                 mask,
                                 esm_model,
@@ -556,7 +565,7 @@ def main(args):
                     else:
                         loss_msa = msa_similarity_loss(
                             log_probs,
-                            boltz2_feats["msa"],
+                            boltz2_feats["msa_vocab22"],
                             boltz2_feats["msa_mask"],
                             mask,
                             margin=args.msa_margin,

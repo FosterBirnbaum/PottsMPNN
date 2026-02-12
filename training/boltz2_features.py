@@ -23,6 +23,28 @@ _BACKBONE_DIM = (
 _ATOM_WINDOW_QUERIES = 32
 
 
+_MPNN_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX-"
+_MPNN_TOKEN_TO_ID = {aa: idx for idx, aa in enumerate(_MPNN_ALPHABET)}
+_BOLTZ_TOKEN_TO_MPNN_ID = {
+    const.token_ids["-"]: _MPNN_TOKEN_TO_ID["-"],
+    const.token_ids["UNK"]: _MPNN_TOKEN_TO_ID["X"],
+}
+for aa in _MPNN_ALPHABET:
+    if aa in ("X", "-"):
+        continue
+    boltz_tok = const.prot_letter_to_token.get(aa)
+    if boltz_tok is None:
+        continue
+    _BOLTZ_TOKEN_TO_MPNN_ID[const.token_ids[boltz_tok]] = _MPNN_TOKEN_TO_ID[aa]
+
+
+def _msa_tokens_to_mpnn_vocab22(msa_tokens: torch.Tensor) -> torch.Tensor:
+    mapped = torch.full_like(msa_tokens, fill_value=_MPNN_TOKEN_TO_ID["X"])
+    for src_token, dst_token in _BOLTZ_TOKEN_TO_MPNN_ID.items():
+        mapped[msa_tokens == src_token] = dst_token
+    return mapped
+
+
 def _pad_atom_features_to_window(
     features: dict[str, torch.Tensor],
     num_tokens: int,
@@ -127,6 +149,7 @@ def build_boltz2_item_feats(item: dict) -> dict[str, torch.Tensor]:
         combined_msa = [seq]
 
     msa_tokens = torch.stack([_token_ids_from_sequence(s) for s in combined_msa], dim=0)
+    msa_tokens_vocab22 = _msa_tokens_to_mpnn_vocab22(msa_tokens)
     msa_mask = torch.ones_like(msa_tokens, dtype=torch.float)
     msa_one_hot = one_hot(msa_tokens, num_classes=const.num_tokens).float()
     profile = msa_one_hot.mean(dim=0)
@@ -213,6 +236,7 @@ def build_boltz2_item_feats(item: dict) -> dict[str, torch.Tensor]:
         "profile": profile,
         "deletion_mean": deletion_mean,
         "msa": msa_tokens,
+        "msa_vocab22": msa_tokens_vocab22,
         "msa_mask": msa_mask,
         "has_deletion": has_deletion,
         "deletion_value": deletion_value,
@@ -253,6 +277,7 @@ def build_boltz2_item_feats(item: dict) -> dict[str, torch.Tensor]:
 
 _PAD_VALUES = {
     "msa": const.token_ids["-"],
+    "msa_vocab22": _MPNN_TOKEN_TO_ID["-"],
 }
 
 

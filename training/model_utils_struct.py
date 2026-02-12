@@ -23,7 +23,7 @@ from dataclasses import asdict
 from training.trunk import FoldingTrunk, FoldingTrunkConfig
 
 def char_to_1hot(char):
-    ALPHABET='ACDEFGHIKLMNPQRSTVWY-X'
+    ALPHABET='ACDEFGHIKLMNPQRSTVWYX-'
     char_idx = ALPHABET.find(char)
     if char_idx == -1:
         return None  # Character not found in the alphabet
@@ -1284,9 +1284,9 @@ class MultiLayerLinear(nn.Module):
 
 
 class ProteinMPNN(nn.Module):
-    def __init__(self, num_letters=21, node_features=128, edge_features=128,
+    def __init__(self, num_letters=22, node_features=128, edge_features=128,
         hidden_dim=128, output_dim=400, num_encoder_layers=3, num_decoder_layers=3, seq_encoding='one_hot',
-        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True, struct_trunk_backend='boltz2'):
+        vocab=22, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True, struct_trunk_backend='boltz2'):
         super(ProteinMPNN, self).__init__()
         # Hyperparameters
         self.node_features = node_features
