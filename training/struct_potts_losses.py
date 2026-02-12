@@ -33,6 +33,7 @@ def msa_similarity_loss(log_probs, msa_tokens, msa_mask, seq_mask, margin=0.0):
     msa_tokens = msa_tokens.to(log_probs.device)
     msa_mask = msa_mask.to(log_probs.device)
     seq_mask = seq_mask.to(log_probs.device)
+    msa_tokens = torch.clamp(msa_tokens, min=0, max=vocab - 1)
 
     # Broadcast predicted log-probabilities across the MSA depth.
     log_probs_exp = log_probs[:, None, :, :].expand(
@@ -215,6 +216,7 @@ def msa_similarity_loss_esmc(
     msa_mask = msa_mask.to(device)
     seq_mask = seq_mask.to(device)
     token_id_map = token_id_map.to(device)
+    msa_tokens = torch.clamp(msa_tokens, min=0, max=token_id_map.shape[0] - 1)
 
     pred_one_hot = _gumbel_one_hot(
         log_probs, temperature=gumbel_temperature, hard=True
@@ -313,6 +315,7 @@ def msa_similarity_loss_esm(
     msa_mask = msa_mask.to(device)
     seq_mask = seq_mask.to(device)
     token_id_map = token_id_map.to(device)
+    msa_tokens = torch.clamp(msa_tokens, min=0, max=token_id_map.shape[0] - 1)
 
     # Map model vocab tokens into ESM's token IDs via the provided lookup.
     if pred_embed_mode == "gumbel_st":
