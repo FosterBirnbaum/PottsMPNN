@@ -58,9 +58,12 @@ def get_boltz2_feats(batch):
     return boltz2_feats
 
 
-def validate_boltz2_alignment(boltz2_feats, seq_mask):
+def validate_boltz2_alignment(boltz2_feats, seq_mask, atoms_per_window_queries: int = 32):
     token_mask = boltz2_feats.get("token_pad_mask")
     msa = boltz2_feats.get("msa")
+    ref_pos = boltz2_feats.get("ref_pos")
+    atom_pad_mask = boltz2_feats.get("atom_pad_mask")
+    atom_to_token = boltz2_feats.get("atom_to_token")
     if token_mask is None:
         raise KeyError("Boltz2 features missing token_pad_mask.")
     if token_mask.shape[0] != seq_mask.shape[0]:
@@ -77,6 +80,34 @@ def validate_boltz2_alignment(boltz2_feats, seq_mask):
         raise ValueError(
             f"Boltz2 MSA length {msa.shape[-1]} does not match "
             f"sequence length {seq_mask.shape[1]}."
+        )
+    if ref_pos is None or atom_pad_mask is None or atom_to_token is None:
+        raise KeyError(
+            "Boltz2 features missing one of: ref_pos, atom_pad_mask, atom_to_token."
+        )
+    if ref_pos.shape[0] != token_mask.shape[0]:
+        raise ValueError(
+            f"Boltz2 atom batch size {ref_pos.shape[0]} does not match token batch size {token_mask.shape[0]}."
+        )
+    if ref_pos.shape[-1] != 3:
+        raise ValueError(
+            f"Boltz2 ref_pos last dim must be 3, got {ref_pos.shape[-1]}."
+        )
+
+    atom_count = ref_pos.shape[1]
+    if atom_pad_mask.shape[1] != atom_count or atom_to_token.shape[1] != atom_count:
+        raise ValueError(
+            "Boltz2 atom feature dimensions disagree: "
+            f"ref_pos={ref_pos.shape}, atom_pad_mask={atom_pad_mask.shape}, "
+            f"atom_to_token={atom_to_token.shape}."
+        )
+    if atom_to_token.shape[2] != token_mask.shape[1]:
+        raise ValueError(
+            f"Boltz2 atom_to_token token dim {atom_to_token.shape[2]} does not match token length {token_mask.shape[1]}."
+        )
+    if atom_count % atoms_per_window_queries != 0:
+        raise ValueError(
+            f"Boltz2 atom count {atom_count} must be divisible by atoms_per_window_queries={atoms_per_window_queries}."
         )
 
 

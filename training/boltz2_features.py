@@ -20,6 +20,49 @@ _BACKBONE_DIM = (
     + len(const.protein_backbone_atom_index)
     + len(const.nucleic_backbone_atom_index)
 )
+_ATOM_WINDOW_QUERIES = 32
+
+
+def _pad_atom_features_to_window(
+    features: dict[str, torch.Tensor],
+    num_tokens: int,
+    atom_window_queries: int = _ATOM_WINDOW_QUERIES,
+) -> dict[str, torch.Tensor]:
+    """Pad atom-axis features so atom count is divisible by the atom window size."""
+    num_atoms = int(features["ref_pos"].shape[0])
+    pad_len = ((num_atoms - 1) // atom_window_queries + 1) * atom_window_queries - num_atoms
+    if pad_len <= 0:
+        return features
+
+    def _pad_last_dim(tensor: torch.Tensor, value: float = 0.0) -> torch.Tensor:
+        pad_shape = list(tensor.shape)
+        pad_shape[0] = pad_len
+        padding = torch.full(
+            pad_shape,
+            fill_value=value,
+            dtype=tensor.dtype,
+            device=tensor.device,
+        )
+        return torch.cat([tensor, padding], dim=0)
+
+    features["ref_pos"] = _pad_last_dim(features["ref_pos"], value=0.0)
+    features["ref_charge"] = _pad_last_dim(features["ref_charge"], value=0.0)
+    features["ref_element"] = _pad_last_dim(features["ref_element"], value=0)
+    features["ref_atom_name_chars"] = _pad_last_dim(features["ref_atom_name_chars"], value=0)
+    features["ref_space_uid"] = _pad_last_dim(features["ref_space_uid"], value=0)
+    features["atom_backbone_feat"] = _pad_last_dim(features["atom_backbone_feat"], value=0)
+    features["atom_pad_mask"] = _pad_last_dim(features["atom_pad_mask"], value=0)
+
+    atom_to_token_pad = torch.zeros(
+        (pad_len, num_tokens),
+        dtype=features["atom_to_token"].dtype,
+        device=features["atom_to_token"].device,
+    )
+    features["atom_to_token"] = torch.cat(
+        [features["atom_to_token"], atom_to_token_pad],
+        dim=0,
+    )
+    return features
 
 
 def _token_ids_from_sequence(seq: str) -> torch.Tensor:
@@ -159,15 +202,13 @@ def build_boltz2_item_feats(item: dict) -> dict[str, torch.Tensor]:
         dtype=torch.long,
     )
     atom_backbone_feat = one_hot(backbone_feat_index, num_classes=_BACKBONE_DIM)
-    print('length: ', length)
-    print('seq: ', seq)
     atom_to_token = one_hot(
         torch.arange(length, dtype=torch.long), num_classes=length
     ).float()
 
     template_features = load_dummy_templates_features(tdim=1, num_tokens=length)
 
-    return {
+    features = {
         "res_type": res_type,
         "profile": profile,
         "deletion_mean": deletion_mean,
@@ -200,6 +241,14 @@ def build_boltz2_item_feats(item: dict) -> dict[str, torch.Tensor]:
         "atom_to_token": atom_to_token,
         **template_features,
     }
+
+    features = _pad_atom_features_to_window(features, num_tokens=length)
+    if features["ref_pos"].shape[0] % _ATOM_WINDOW_QUERIES != 0:
+        raise ValueError(
+            "Invalid Boltz2 atom feature size: ref_pos atom dimension "
+            f"{features['ref_pos'].shape[0]} must be divisible by {_ATOM_WINDOW_QUERIES}."
+        )
+    return features
 
 
 _PAD_VALUES = {
