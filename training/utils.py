@@ -395,8 +395,12 @@ def loader_pdb(item,params):
     }
 
 def build_training_clusters(params, debug):
-    val_ids = set([int(l) for l in open(params['VAL']).readlines()])
-    test_ids = set([int(l) for l in open(params['TEST']).readlines()])
+
+    with open(params['VAL'], 'r') as f:
+        val_ids = set(int(l) for l in f)
+
+    with open(params['TEST'], 'r') as f:
+        test_ids = set(int(l) for l in f)
    
     if debug:
         val_ids = []
