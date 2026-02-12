@@ -130,7 +130,7 @@ class Boltz2TrunkAdapter(nn.Module):
             s, z = self.pairformer_module(
                 s, z, mask=mask, pair_mask=pair_mask, use_kernels=self.use_kernels
             )
-
+            
         return TrunkOutputs(
             s_trunk=s,
             z_trunk=z,
