@@ -20,40 +20,32 @@ def decoy_real_fraction_schedule(step, start_step, end_step, max_fraction):
 
 
 def load_boltz2_checkpoint(checkpoint_path, device):
-    import inspect
-    from collections.abc import Mapping
+    from dataclasses import asdict
 
-    import torch
-
+    from boltz.main import (
+        Boltz2DiffusionParams,
+        BoltzSteeringParams,
+        MSAModuleArgs,
+        PairformerArgsV2,
+    )
     from boltz.model.models.boltz2 import Boltz2
-    from boltz.model.modules.diffusionv2 import AtomDiffusion
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    hparams = checkpoint.get("hyper_parameters", {})
-
-    raw_diffusion_args = hparams.get("diffusion_process_args")
-    if isinstance(raw_diffusion_args, Mapping):
-        diffusion_process_args = dict(raw_diffusion_args)
-    elif hasattr(raw_diffusion_args, "items"):
-        diffusion_process_args = dict(raw_diffusion_args.items())
-    else:
-        diffusion_process_args = {}
-
-    accepted_diffusion_keys = {
-        name
-        for name in inspect.signature(AtomDiffusion.__init__).parameters
-        if name not in {"self", "score_model_args"}
-    }
-    filtered_diffusion_args = {
-        key: value
-        for key, value in diffusion_process_args.items()
-        if key in accepted_diffusion_keys
-    }
+    diffusion_params = Boltz2DiffusionParams()
+    pairformer_args = PairformerArgsV2()
+    msa_args = MSAModuleArgs(use_paired_feature=True)
+    steering_args = BoltzSteeringParams()
 
     return Boltz2.load_from_checkpoint(
         checkpoint_path,
-        map_location=device,
-        diffusion_process_args=filtered_diffusion_args,
+        strict=True,
+        predict_args={},
+        map_location="cpu",
+        diffusion_process_args=asdict(diffusion_params),
+        ema=False,
+        use_kernels=True,
+        pairformer_args=asdict(pairformer_args),
+        msa_args=asdict(msa_args),
+        steering_args=asdict(steering_args),
     )
 
 
