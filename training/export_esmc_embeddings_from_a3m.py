@@ -9,6 +9,7 @@ ESM-C model. Embeddings are written as compressed `.npz` files.
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -27,6 +28,33 @@ if str(REPO_ROOT) not in sys.path:
 from msa_training.utils import clean_a3m  # noqa: E402
 from esm.models.esmc import ESMC  # noqa: E402
 from esm.utils.encoding import tokenize_sequence  # noqa: E402
+
+
+AMINO_ACIDS = tuple("ACDEFGHIKLMNPQRSTVWY")
+# Approximate natural amino-acid frequencies (sum ~= 1.0), used to bias random
+# draws toward biologically plausible compositions instead of uniform noise.
+AMINO_ACID_FREQS = (
+    0.083,  # A
+    0.014,  # C
+    0.054,  # D
+    0.067,  # E
+    0.039,  # F
+    0.072,  # G
+    0.022,  # H
+    0.057,  # I
+    0.058,  # K
+    0.097,  # L
+    0.024,  # M
+    0.040,  # N
+    0.047,  # P
+    0.039,  # Q
+    0.052,  # R
+    0.068,  # S
+    0.058,  # T
+    0.073,  # V
+    0.013,  # W
+    0.033,  # Y
+)
 
 
 def parse_a3m_sequences(
@@ -100,6 +128,20 @@ def collect_a3m_files(a3m_input: Path) -> list[Path]:
     return files
 
 
+def generate_random_sequences(length: int, count: int, rng: random.Random) -> list[str]:
+    """Generate random but biologically plausible protein sequences."""
+    if length <= 0:
+        raise ValueError("length must be > 0")
+    if count <= 0:
+        raise ValueError("count must be > 0")
+
+    sequences: list[str] = []
+    for _ in range(count):
+        seq_chars = rng.choices(AMINO_ACIDS, weights=AMINO_ACID_FREQS, k=length)
+        sequences.append("".join(seq_chars))
+    return sequences
+
+
 def embed_sequences(
     model: ESMC,
     sequences: list[str],
@@ -140,6 +182,9 @@ def export_embeddings(
     insrt_thresh: float,
     max_msa_seqs: int,
     batch_size: int,
+    use_random_sequences: bool,
+    num_random_sequences: int,
+    random_seed: int,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -148,15 +193,31 @@ def export_embeddings(
     model.eval()
 
     total = 0
+    rng = random.Random(random_seed)
     for a3m_path in tqdm(a3m_files):
-        msa_seqs = parse_a3m_sequences(
+        parsed_msa_seqs = parse_a3m_sequences(
             a3m_path,
             id_thresh=id_thresh,
             del_thresh=del_thresh,
             insrt_thresh=insrt_thresh,
         )
-        if max_msa_seqs > 0:
-            msa_seqs = msa_seqs[:max_msa_seqs]
+        query_seq = parsed_msa_seqs[0]
+
+        if use_random_sequences:
+            msa_seqs = generate_random_sequences(
+                length=len(query_seq),
+                count=num_random_sequences,
+                rng=rng,
+            )
+            kept_desc = f"random_seqs={len(msa_seqs)}"
+        else:
+            msa_seqs = parsed_msa_seqs
+            if max_msa_seqs > 0:
+                msa_seqs = msa_seqs[:max_msa_seqs]
+            kept_desc = (
+                f"kept_msa={len(msa_seqs)} "
+                f"(id>{id_thresh}, del<={del_thresh}, ins<={insrt_thresh})"
+            )
 
         sample_id = a3m_path.stem
         msa_embeddings = embed_sequences(model, msa_seqs, device=device, batch_size=batch_size)
@@ -177,8 +238,7 @@ def export_embeddings(
         )
         total += 1
         print(
-            f"[ok] {sample_id}: kept_msa={len(msa_seqs)} "
-            f"(id>{id_thresh}, del<={del_thresh}, ins<={insrt_thresh}) "
+            f"[ok] {sample_id}: {kept_desc} "
             f"query{tuple(query_embedding.shape)} msa{tuple(msa_embeddings.shape)} -> {out_path}"
         )
 
@@ -220,6 +280,26 @@ def parse_args() -> argparse.Namespace:
         help="Maximum kept MSA depth to embed (0 means no limit).",
     )
     parser.add_argument(
+        "--use_random_sequences",
+        action="store_true",
+        help=(
+            "If set, ignore MSA sequences from each .a3m and embed random protein "
+            "sequences of query length instead."
+        ),
+    )
+    parser.add_argument(
+        "--num_random_sequences",
+        type=int,
+        default=128,
+        help="Number of random sequences to embed per input .a3m when random mode is enabled.",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=0,
+        help="Random seed used for random sequence generation mode.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=("cuda:0" if torch.cuda.is_available() else "cpu"),
@@ -257,6 +337,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.use_random_sequences and args.num_random_sequences <= 0:
+        raise ValueError("--num_random_sequences must be > 0 when --use_random_sequences is set.")
+
     a3m_files = collect_a3m_files(args.a3m_input)
     device = torch.device(args.device)
     print(
@@ -274,6 +357,9 @@ def main() -> None:
         insrt_thresh=args.insrt_thresh,
         max_msa_seqs=args.max_msa_seqs,
         batch_size=args.batch_size,
+        use_random_sequences=args.use_random_sequences,
+        num_random_sequences=args.num_random_sequences,
+        random_seed=args.random_seed,
     )
 
 
