@@ -128,6 +128,35 @@ def collect_a3m_files(a3m_input: Path) -> list[Path]:
     return files
 
 
+
+
+def parse_query_length(a3m_path: Path) -> int:
+    """Parse only the native/query sequence length from an A3M file."""
+    current: list[str] = []
+    with a3m_path.open("r") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(">") or line.startswith("#"):
+                if current:
+                    break
+                continue
+            current.append(line)
+
+    if not current:
+        raise ValueError(f"No query sequence parsed from {a3m_path}")
+
+    return len(clean_a3m("".join(current)))
+
+
+def collect_unique_query_lengths(a3m_files: Iterable[Path]) -> list[int]:
+    """Collect sorted unique native/query lengths across provided A3M files."""
+    lengths = {parse_query_length(a3m_path) for a3m_path in a3m_files}
+    if not lengths:
+        raise ValueError("No query lengths found in provided A3M files.")
+    return sorted(lengths)
+
 def generate_random_sequences(length: int, count: int, rng: random.Random) -> list[str]:
     """Generate random but biologically plausible protein sequences."""
     if length <= 0:
@@ -172,7 +201,7 @@ def embed_sequences(
 
 
 def export_embeddings(
-    a3m_files: Iterable[Path],
+    a3m_files: list[Path],
     model_name: str,
     out_dir: Path,
     device: torch.device,
@@ -194,6 +223,44 @@ def export_embeddings(
 
     total = 0
     rng = random.Random(random_seed)
+
+    if use_random_sequences:
+        unique_lengths = collect_unique_query_lengths(a3m_files)
+        for query_len in tqdm(unique_lengths):
+            sample_id = f"len_{query_len}"
+            msa_seqs = generate_random_sequences(
+                length=query_len,
+                count=num_random_sequences,
+                rng=rng,
+            )
+            msa_embeddings = embed_sequences(model, msa_seqs, device=device, batch_size=batch_size)
+            query_embedding = msa_embeddings[0]
+
+            if output_layout == "boltz":
+                target_dir = out_dir / sample_id
+                target_dir.mkdir(parents=True, exist_ok=True)
+                out_path = target_dir / f"embeddings_{sample_id}.npz"
+            else:
+                out_path = out_dir / f"embeddings_{sample_id}.npz"
+
+            np.savez_compressed(
+                out_path,
+                query_embedding=query_embedding,
+                msa_embeddings=msa_embeddings,
+                sequences=np.asarray(msa_seqs, dtype=object),
+            )
+            total += 1
+            print(
+                f"[ok] {sample_id}: random_seqs={len(msa_seqs)} "
+                f"query{tuple(query_embedding.shape)} msa{tuple(msa_embeddings.shape)} -> {out_path}"
+            )
+
+        print(
+            f"Done. Exported embeddings for {total} unique native length(s) "
+            f"from {len(a3m_files)} A3M file(s)."
+        )
+        return
+
     for a3m_path in tqdm(a3m_files):
         parsed_msa_seqs = parse_a3m_sequences(
             a3m_path,
@@ -201,23 +268,9 @@ def export_embeddings(
             del_thresh=del_thresh,
             insrt_thresh=insrt_thresh,
         )
-        query_seq = parsed_msa_seqs[0]
-
-        if use_random_sequences:
-            msa_seqs = generate_random_sequences(
-                length=len(query_seq),
-                count=num_random_sequences,
-                rng=rng,
-            )
-            kept_desc = f"random_seqs={len(msa_seqs)}"
-        else:
-            msa_seqs = parsed_msa_seqs
-            if max_msa_seqs > 0:
-                msa_seqs = msa_seqs[:max_msa_seqs]
-            kept_desc = (
-                f"kept_msa={len(msa_seqs)} "
-                f"(id>{id_thresh}, del<={del_thresh}, ins<={insrt_thresh})"
-            )
+        msa_seqs = parsed_msa_seqs
+        if max_msa_seqs > 0:
+            msa_seqs = msa_seqs[:max_msa_seqs]
 
         sample_id = a3m_path.stem
         msa_embeddings = embed_sequences(model, msa_seqs, device=device, batch_size=batch_size)
@@ -238,7 +291,8 @@ def export_embeddings(
         )
         total += 1
         print(
-            f"[ok] {sample_id}: {kept_desc} "
+            f"[ok] {sample_id}: kept_msa={len(msa_seqs)} "
+            f"(id>{id_thresh}, del<={del_thresh}, ins<={insrt_thresh}) "
             f"query{tuple(query_embedding.shape)} msa{tuple(msa_embeddings.shape)} -> {out_path}"
         )
 
@@ -283,8 +337,8 @@ def parse_args() -> argparse.Namespace:
         "--use_random_sequences",
         action="store_true",
         help=(
-            "If set, ignore MSA sequences from each .a3m and embed random protein "
-            "sequences of query length instead."
+            "If set, ignore MSA sequences and instead: collect unique native/query "
+            "lengths across all .a3m files, then embed random sequences for each length."
         ),
     )
     parser.add_argument(
