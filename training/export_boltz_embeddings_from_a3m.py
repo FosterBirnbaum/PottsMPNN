@@ -247,6 +247,7 @@ def main() -> None:
     a3m_files = collect_a3m_files(args.a3m_input)
     device = torch.device(args.device)
     print(f"Exporting Boltz2 embeddings from {len(a3m_files)} A3M file(s) using checkpoint: {args.checkpoint} and saving to {args.out_dir}.")
+    print(args)
     export_embeddings(
         a3m_files=a3m_files,
         checkpoint=args.checkpoint,
