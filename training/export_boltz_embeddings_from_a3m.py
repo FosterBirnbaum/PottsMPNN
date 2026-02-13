@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Iterable
-
+from tqdm import tqdm
 import numpy as np
 import torch
 
@@ -26,9 +26,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from msa_training.utils import clean_a3m  # noqa: E402
-from training.boltz2_adapter import Boltz2TrunkAdapter  # noqa: E402
-from training.boltz2_features import build_boltz2_item_feats, collate_boltz2_feats  # noqa: E402
-from training.training_struct_potts import load_boltz2_checkpoint  # noqa: E402
+TRAINING_SRC = REPO_ROOT / "training"
+print("TRAINING_SRC:", TRAINING_SRC)
+if str(TRAINING_SRC) not in sys.path:
+    sys.path.insert(0, str(TRAINING_SRC))
+from boltz2_adapter import Boltz2TrunkAdapter  # noqa: E402
+from boltz2_features import build_boltz2_item_feats, collate_boltz2_feats  # noqa: E402
+from training_struct_potts import load_boltz2_checkpoint  # noqa: E402
 
 
 def parse_a3m_sequences(a3m_path: Path) -> list[str]:
@@ -102,7 +106,7 @@ def export_embeddings(
 
     total = 0
     with torch.no_grad():
-        for a3m_path in a3m_files:
+        for a3m_path in tqdm(a3m_files):
             msa_seqs = parse_a3m_sequences(a3m_path)
             query_seq = msa_seqs[0]
             sample_id = a3m_path.stem
@@ -188,6 +192,7 @@ def main() -> None:
 
     a3m_files = collect_a3m_files(args.a3m_input)
     device = torch.device(args.device)
+    print(f"Exporting Boltz2 embeddings from {len(a3m_files)} A3M file(s) using checkpoint: {args.checkpoint} and saving to {args.out_dir}.")
     export_embeddings(
         a3m_files=a3m_files,
         checkpoint=args.checkpoint,
