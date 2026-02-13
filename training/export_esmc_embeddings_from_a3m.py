@@ -123,7 +123,7 @@ def embed_sequences(
             if output.embeddings is None:
                 raise RuntimeError("ESM-C forward returned no embeddings")
             # Remove BOS/EOS so stored embeddings match residue length.
-            emb = output.embeddings[:, 1:-1, :].detach().cpu().numpy().astype(np.float32)
+            emb = output.embeddings[:, 1:-1, :].detach().cpu().float().numpy()
             chunks.append(emb)
 
     return np.concatenate(chunks, axis=0)
@@ -156,6 +156,11 @@ def export_embeddings(
             insrt_thresh=insrt_thresh,
         )
         if max_msa_seqs > 0:
+            native_seq = msa_seqs[0]
+            non_native_seqs = msa_seqs[1:]
+            rng = np.random.default_rng()
+            rng.shuffle(non_native_seqs)
+            msa_seqs = [native_seq, *non_native_seqs]
             msa_seqs = msa_seqs[:max_msa_seqs]
 
         sample_id = a3m_path.stem
