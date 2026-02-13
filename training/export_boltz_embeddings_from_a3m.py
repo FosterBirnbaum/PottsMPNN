@@ -31,9 +31,20 @@ from training.boltz2_features import build_boltz2_item_feats, collate_boltz2_fea
 from training.training_struct_potts import load_boltz2_checkpoint  # noqa: E402
 
 
-def parse_a3m_sequences(a3m_path: Path) -> list[str]:
-    """Parse A3M sequences and remove insertion symbols using msa_training.clean_a3m."""
-    sequences: list[str] = []
+def parse_a3m_sequences(
+    a3m_path: Path,
+    id_thresh: float,
+    del_thresh: float,
+    insrt_thresh: float,
+) -> list[str]:
+    """Parse and filter A3M sequences using msa_training threshold definitions.
+
+    Filters mirror msa_training: keep sequences only if
+      - sequence identity to query > id_thresh
+      - deletion percent <= del_thresh
+      - insertion percent <= insrt_thresh
+    """
+    raw_sequences: list[str] = []
     current: list[str] = []
     with a3m_path.open("r") as handle:
         for raw_line in handle:
@@ -42,27 +53,40 @@ def parse_a3m_sequences(a3m_path: Path) -> list[str]:
                 continue
             if line.startswith(">") or line.startswith("#"):
                 if current:
-                    seq = clean_a3m("".join(current))
-                    if seq:
-                        sequences.append(seq)
+                    raw_sequences.append("".join(current))
                     current = []
                 continue
             current.append(line)
         if current:
-            seq = clean_a3m("".join(current))
-            if seq:
-                sequences.append(seq)
+            raw_sequences.append("".join(current))
 
-    if not sequences:
+    if not raw_sequences:
         raise ValueError(f"No sequences parsed from {a3m_path}")
 
-    query_len = len(sequences[0])
-    filtered = [s for s in sequences if len(s) == query_len]
-    if not filtered:
-        raise ValueError(
-            f"No sequences with query length ({query_len}) in {a3m_path}"
-        )
-    return filtered
+    ref_seq = clean_a3m(raw_sequences[0])
+    query_len = len(ref_seq)
+    kept_sequences: list[str] = [ref_seq]
+
+    for seq_raw in raw_sequences[1:]:
+        if any(ch in seq_raw for ch in "BJOUZ"):
+            continue
+        insert_pct = len([ch for ch in seq_raw if ch.islower()]) / len(seq_raw) if seq_raw else 0.0
+        seq = clean_a3m(seq_raw)
+        if len(seq) != query_len:
+            continue
+
+        aligned_len = min(len(ref_seq), len(seq))
+        identical = sum(ref_seq[j] == seq[j] for j in range(aligned_len))
+        identity = identical / aligned_len if aligned_len > 0 else 0.0
+        deletion_pct = seq.count("-") / len(seq) if seq else 0.0
+
+        if identity <= id_thresh or deletion_pct > del_thresh or insert_pct > insrt_thresh:
+            continue
+        kept_sequences.append(seq)
+
+    if not kept_sequences:
+        raise ValueError(f"No sequences remained after filtering in {a3m_path}")
+    return kept_sequences
 
 
 def collect_a3m_files(a3m_input: Path) -> list[Path]:
@@ -89,6 +113,9 @@ def export_embeddings(
     device: torch.device,
     recycling_steps: int,
     output_layout: str,
+    id_thresh: float,
+    del_thresh: float,
+    insrt_thresh: float,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,7 +130,12 @@ def export_embeddings(
     total = 0
     with torch.no_grad():
         for a3m_path in a3m_files:
-            msa_seqs = parse_a3m_sequences(a3m_path)
+            msa_seqs = parse_a3m_sequences(
+                a3m_path,
+                id_thresh=id_thresh,
+                del_thresh=del_thresh,
+                insrt_thresh=insrt_thresh,
+            )
             query_seq = msa_seqs[0]
             sample_id = a3m_path.stem
 
@@ -130,7 +162,11 @@ def export_embeddings(
 
             np.savez_compressed(out_path, s=s, z=z)
             total += 1
-            print(f"[ok] {sample_id}: s{tuple(s.shape)} z{tuple(z.shape)} -> {out_path}")
+            print(
+                f"[ok] {sample_id}: kept_msa={len(msa_seqs)} "
+                f"(id>{id_thresh}, del<={del_thresh}, ins<={insrt_thresh}) "
+                f"s{tuple(s.shape)} z{tuple(z.shape)} -> {out_path}"
+            )
 
     print(f"Done. Exported embeddings for {total} A3M file(s).")
 
@@ -178,6 +214,24 @@ def parse_args() -> argparse.Namespace:
             "'flat': out_dir/embeddings_<id>.npz"
         ),
     )
+    parser.add_argument(
+        "--id_thresh",
+        type=float,
+        default=0.5,
+        help="Sequence identity cutoff for MSA sequences (keep if identity > cutoff).",
+    )
+    parser.add_argument(
+        "--del_thresh",
+        type=float,
+        default=0.2,
+        help="Gap/deletion percentage cutoff (keep if deletion_pct <= cutoff).",
+    )
+    parser.add_argument(
+        "--insrt_thresh",
+        type=float,
+        default=0.2,
+        help="Insertion percentage cutoff (keep if insertion_pct <= cutoff).",
+    )
     return parser.parse_args()
 
 
@@ -195,6 +249,9 @@ def main() -> None:
         device=device,
         recycling_steps=args.recycling_steps,
         output_layout=args.output_layout,
+        id_thresh=args.id_thresh,
+        del_thresh=args.del_thresh,
+        insrt_thresh=args.insrt_thresh,
     )
 
 
