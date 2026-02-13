@@ -238,7 +238,11 @@ def main(args):
     from boltz2_adapter import Boltz2TrunkAdapter, SequencePottsHead
     from struct_potts_losses import (
         ESMCDecoySequencePool,
+        expand_etab_dense,
+        gauge_project_potts_table,
         potts_consistency_loss,
+        potts_norm_regularization,
+        potts_scale_regularization,
         msa_similarity_loss,
         msa_similarity_loss_esm,
         msa_similarity_loss_esmc,
@@ -463,6 +467,23 @@ def main(args):
                         loss_potts = potts_consistency_loss(
                             etab_geom, e_idx, etab_seq_dense, mask
                         )
+                        pair_mask = mask[:, :, None] * mask[:, None, :]
+                        etab_geom_dense = gauge_project_potts_table(
+                            expand_etab_dense(etab_geom, e_idx)
+                        )
+                        etab_seq_dense_gauge = gauge_project_potts_table(etab_seq_dense)
+                        loss_potts_norm = 0.5 * (
+                            potts_norm_regularization(etab_geom_dense, pair_mask)
+                            + potts_norm_regularization(etab_seq_dense_gauge, pair_mask)
+                        )
+                        loss_potts_scale = 0.5 * (
+                            potts_scale_regularization(
+                                etab_geom_dense, pair_mask, target_rms=args.potts_scale_target
+                            )
+                            + potts_scale_regularization(
+                                etab_seq_dense_gauge, pair_mask, target_rms=args.potts_scale_target
+                            )
+                        )
                         if args.msa_similarity_loss_type == "esm":
                             if esm_is_esmc:
                                 loss_msa = msa_similarity_loss_esmc(
@@ -509,6 +530,8 @@ def main(args):
                             args.loss_potts_weight * loss_potts
                             + args.loss_msa_weight * loss_msa
                             + args.loss_struct_weight * loss_struct
+                            + args.loss_potts_norm_weight * loss_potts_norm
+                            + args.loss_potts_scale_weight * loss_potts_scale
                         )
                         _, loss_av_smoothed = loss_smoothed(S, log_probs, mask_for_loss)
                         loss_total = loss_total + args.loss_nll_weight * loss_av_smoothed
@@ -535,6 +558,23 @@ def main(args):
                     )
                     loss_potts = potts_consistency_loss(
                         etab_geom, e_idx, etab_seq_dense, mask
+                    )
+                    pair_mask = mask[:, :, None] * mask[:, None, :]
+                    etab_geom_dense = gauge_project_potts_table(
+                        expand_etab_dense(etab_geom, e_idx)
+                    )
+                    etab_seq_dense_gauge = gauge_project_potts_table(etab_seq_dense)
+                    loss_potts_norm = 0.5 * (
+                        potts_norm_regularization(etab_geom_dense, pair_mask)
+                        + potts_norm_regularization(etab_seq_dense_gauge, pair_mask)
+                    )
+                    loss_potts_scale = 0.5 * (
+                        potts_scale_regularization(
+                            etab_geom_dense, pair_mask, target_rms=args.potts_scale_target
+                        )
+                        + potts_scale_regularization(
+                            etab_seq_dense_gauge, pair_mask, target_rms=args.potts_scale_target
+                        )
                     )
                     if args.msa_similarity_loss_type == "esm":
                         if esm_is_esmc:
@@ -580,6 +620,8 @@ def main(args):
                         args.loss_potts_weight * loss_potts
                         + args.loss_msa_weight * loss_msa
                         + args.loss_struct_weight * loss_struct
+                        + args.loss_potts_norm_weight * loss_potts_norm
+                        + args.loss_potts_scale_weight * loss_potts_scale
                     )
                     _, loss_av_smoothed = loss_smoothed(S, log_probs, mask_for_loss)
                     loss_total = loss_total + args.loss_nll_weight * loss_av_smoothed
@@ -761,6 +803,9 @@ if __name__ == "__main__":
     argparser.add_argument("--loss_msa_weight", type=float, default=1.0)
     argparser.add_argument("--loss_struct_weight", type=float, default=1.0)
     argparser.add_argument("--loss_nll_weight", type=float, default=1.0)
+    argparser.add_argument("--loss_potts_norm_weight", type=float, default=1e-4)
+    argparser.add_argument("--loss_potts_scale_weight", type=float, default=1e-2)
+    argparser.add_argument("--potts_scale_target", type=float, default=1.0)
     argparser.add_argument("--msa_margin", type=float, default=0.1)
     argparser.add_argument(
         "--msa_similarity_loss_type",
