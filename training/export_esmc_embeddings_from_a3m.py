@@ -128,8 +128,6 @@ def collect_a3m_files(a3m_input: Path) -> list[Path]:
     return files
 
 
-
-
 def parse_query_length(a3m_path: Path) -> int:
     """Parse only the native/query sequence length from an A3M file."""
     current: list[str] = []
@@ -401,7 +399,13 @@ def main() -> None:
 
     a3m_files = collect_a3m_files(args.a3m_input)
     device = torch.device(args.device)
-    print(
+    if args.use_random_sequences:
+        print(
+            f"Random sequence mode enabled: generating {args.num_random_sequences} random sequences "
+            f"per unique native length across {len(a3m_files)} A3M file(s) with seed={args.random_seed}."
+        )
+    else:
+        print(
         f"Exporting ESM-C embeddings from {len(a3m_files)} A3M file(s) "
         f"using model={args.model_name} and saving to {args.out_dir}."
     )
