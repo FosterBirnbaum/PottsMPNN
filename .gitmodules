@@ -1,3 +1,6 @@
 [submodule "boltz2"]
 	path = boltz2
 	url = https://github.com/jwohlwend/boltz.git
+[submodule "esm"]
+	path = esm
+	url = https://github.com/evolutionaryscale/esm.git

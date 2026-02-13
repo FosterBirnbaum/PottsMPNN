@@ -17,7 +17,7 @@ import itertools
 
 
 def featurize(batch, device):
-    alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+    alphabet = 'ACDEFGHIKLMNPQRSTVWYX-'
     B = len(batch)
     lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
     L_max = max([len(b['seq']) for b in batch])
@@ -394,9 +394,9 @@ class ProteinFeatures(nn.Module):
 
 
 class ProteinMPNN(nn.Module):
-    def __init__(self, num_letters=21, node_features=128, edge_features=128,
+    def __init__(self, num_letters=22, node_features=128, edge_features=128,
         hidden_dim=128, num_encoder_layers=3, num_decoder_layers=3,
-        vocab=21, k_neighbors=32, augment_eps=0.1, dropout=0.1):
+        vocab=22, k_neighbors=32, augment_eps=0.1, dropout=0.1):
         super(ProteinMPNN, self).__init__()
 
         # Hyperparameters

@@ -18,11 +18,12 @@ import torch.nn.functional as F
 import random
 import itertools
 import re
-from graph_feat import MultiChainProteinFeatures as CoordFeatures
 from etab_utils import merge_duplicate_pairE, expand_etab
+from dataclasses import asdict
+from training.trunk import FoldingTrunk, FoldingTrunkConfig
 
 def char_to_1hot(char):
-    ALPHABET='ACDEFGHIKLMNPQRSTVWY-X'
+    ALPHABET='ACDEFGHIKLMNPQRSTVWYX-'
     char_idx = ALPHABET.find(char)
     if char_idx == -1:
         return None  # Character not found in the alphabet
@@ -42,6 +43,7 @@ def str_to_list(s):
     pattern = r'<[^>]+>|.'
     
     return re.findall(pattern, s)
+
 
 def _esm_featurize(seq, chain_lens, esm, batch_converter, esm_embed_layer, device, one_hot=False, linker_length=25):
     with torch.no_grad():
@@ -66,7 +68,7 @@ def _esm_featurize(seq, chain_lens, esm, batch_converter, esm_embed_layer, devic
         embs = embs[mask]
     return embs
 
-def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=None, batch_converter=None, esm_embed_dim=2560, esm_embed_layer=36, one_hot=False, return_esm=False, openfold_backbone=False, msa_seqs=False, msa_batch_size=10):
+def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=None, batch_converter=None, esm_embed_dim=2560, esm_embed_layer=36, one_hot=False, return_esm=False, openfold_backbone=False, msa_seqs=False, msa_batch_size=10, esm_msa_cache=None, msa_cache_key=None):
     alphabet = 'ACDEFGHIKLMNPQRSTVWYX-'
 
     if msa_seqs:
@@ -75,10 +77,15 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         visible_chains = batch[0]['visible_list']
         all_chains = masked_chains + visible_chains
         all_seq = ''
-        random.seed(epoch + np.sum([ord(char) for char in batch[0]['name']]))
+        sample_name = batch[0]['name']
+        random.seed(epoch + np.sum([ord(char) for char in sample_name]))
         for chain_letter in all_chains:
-            all_seq += batch[0][f'seq_chain_{chain_letter}'][0]
-            random.shuffle(batch[0][f'seq_chain_{chain_letter}'])
+            chain_seqs = batch[0][f'seq_chain_{chain_letter}']
+            if isinstance(chain_seqs, str):
+                chain_seqs = [chain_seqs]
+                batch[0][f'seq_chain_{chain_letter}'] = chain_seqs
+            all_seq += chain_seqs[0]
+            random.shuffle(chain_seqs)
         num_seqs = max(1, math.floor(msa_batch_size / len(all_seq)))
         
         for i_seq in range(num_seqs):
@@ -93,6 +100,13 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
                     #     break
             new_batch.append(b_copy)
         batch = new_batch
+
+    if esm is not None and msa_seqs and esm_msa_cache is not None and msa_cache_key is not None:
+        cache_marker = "__msa_cache_key__"
+        cached_key = esm_msa_cache.get(cache_marker)
+        if cached_key != msa_cache_key:
+            esm_msa_cache.clear()
+            esm_msa_cache[cache_marker] = msa_cache_key
 
     B = len(batch)
     lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
@@ -119,7 +133,8 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         openfold_backbones = []
         
     for i, b in enumerate(batch):
-        names.append(b['name'])
+        sample_name = b['name']
+        names.append(sample_name)
         chain_lens = []
         masked_chains = b['masked_list']
         visible_chains = b['visible_list']
@@ -202,7 +217,7 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
             x = np.concatenate(x_chain_list,0) #[L, 4, 3]
         except:
             with open('/orcd/scratch/orcd/001/fosterb/pmpnn_experiments/protein_mpnn_potts_ing_consensus_R1/log_out2.txt', 'w') as f:
-                f.write(b['name'] + '\n')
+                f.write(sample_name + '\n')
                 f.write(all_chains)
                 f.write(visible_chains)
                 f.write(str(chain_coords))
@@ -227,7 +242,7 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
             X[i,:,:,:] = x_pad
         except Exception as e:
             with open('/orcd/scratch/orcd/001/fosterb/pmpnn_experiments/protein_mpnn_potts_pdb_msa_50_20_20_batch_20_R3/log_mutils.txt', 'a') as f:
-                f.write(b['name'] + '\n')
+                f.write(sample_name + '\n')
                 f.write(all_sequence + '\n')
                 f.write(str(len(all_sequence)) + '\n')
                 f.write(str(X.shape) + '\n')
@@ -250,7 +265,25 @@ def featurize(batch, device, augment_type, augment_eps, replicate, epoch, esm=No
         #     print(b['name'])
         #     return
         if esm is not None:
-            esm_emb = _esm_featurize(all_sequence, chain_lens, esm, batch_converter, esm_embed_layer, device, one_hot=one_hot)
+            esm_emb = None
+            cache_key = None
+            if msa_seqs and esm_msa_cache is not None:
+                cache_key = (all_sequence, esm_embed_layer, bool(one_hot))
+                esm_emb = esm_msa_cache.get(cache_key)
+                if esm_emb is not None and return_esm:
+                    esm_emb = esm_emb.to(device=device)
+            if esm_emb is None:
+                esm_emb = _esm_featurize(
+                    all_sequence,
+                    chain_lens,
+                    esm,
+                    batch_converter,
+                    esm_embed_layer,
+                    device,
+                    one_hot=one_hot,
+                )
+                if cache_key is not None:
+                    esm_msa_cache[cache_key] = esm_emb.detach().cpu()
             if return_esm:
                 return esm_emb, chain_lens
             S[i,:l] = esm_emb.cpu().numpy()
@@ -1220,10 +1253,6 @@ class ProteinFeatures(nn.Module):
             E = torch.cat((E_positional, RBF_all), -1)
             E = self.edge_embedding(E)
             E = self.norm_edges(E)
-        elif self.feat_type == 'coordinator':
-            raise ValueError
-            featurizer = CoordFeatures(self.edge_features, self.node_features)
-            _, E, E_idx = featurizer(X, chain_labels, mask)
         return E, E_idx
 
 def gelu(x):
@@ -1255,9 +1284,9 @@ class MultiLayerLinear(nn.Module):
 
 
 class ProteinMPNN(nn.Module):
-    def __init__(self, num_letters=21, node_features=128, edge_features=128,
+    def __init__(self, num_letters=22, node_features=128, edge_features=128,
         hidden_dim=128, output_dim=400, num_encoder_layers=3, num_decoder_layers=3, seq_encoding='one_hot',
-        vocab=21, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0' ):
+        vocab=22, k_neighbors=32, augment_eps=0.1, augment_type='atomic', augment_lim=1.0, dropout=0.1, feat_type='protein_mpnn', use_potts=False, node_self_sub=None, clone=True, struct_predict=False, use_struct_weights=True, multimer_structure_module=False, struct_predict_pairs=True, struct_predict_seq=True, use_seq=True, device='cuda:0', struct_use_decoder_one_hot=False, struct_one_hot_temperature=1.0, struct_one_hot_straight_through=True, struct_trunk_backend='boltz2'):
         super(ProteinMPNN, self).__init__()
         # Hyperparameters
         self.node_features = node_features
@@ -1270,6 +1299,10 @@ class ProteinMPNN(nn.Module):
         self.struct_predict_pairs = struct_predict_pairs
         self.struct_predict_seq = struct_predict_seq
         self.use_seq = use_seq
+        self.struct_use_decoder_one_hot = struct_use_decoder_one_hot
+        self.struct_one_hot_temperature = struct_one_hot_temperature
+        self.struct_one_hot_straight_through = struct_one_hot_straight_through
+        self.struct_trunk_backend = struct_trunk_backend
 
         self.features = ProteinFeatures(node_features, edge_features, top_k=k_neighbors, augment_eps=augment_eps, augment_type=augment_type, feat_type=feat_type, augment_lim=augment_lim)
         self.W_e = nn.Linear(edge_features, hidden_dim, bias=True)
@@ -1304,18 +1337,18 @@ class ProteinMPNN(nn.Module):
             self.clone = clone
 
         if self.struct_predict: # Load structure module if needed               
-            from trunk import FoldingTrunk
             url = "https://dl.fbaipublicfiles.com/fair-esm/models/esmfold_structure_module_only_650M.pt"
             model_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu")
-            cfg = model_data["cfg"]["model"]
-            
+
+            trunk_cfg = asdict(FoldingTrunkConfig())
             if not self.use_struct_weights and self.multimer_structure_module:
-                cfg.trunk['structure_module']['is_multimer'] = True
+                trunk_cfg["structure_module"]["is_multimer"] = True
 
             if self.use_struct_weights:
-                cfg.trunk['use_weights'] = True
+                trunk_cfg["use_weights"] = True
 
-            struct_module = FoldingTrunk(**cfg.trunk).to(device)
+            trunk_cfg["trunk_backend"] = self.struct_trunk_backend
+            struct_module = FoldingTrunk(**trunk_cfg).to(device)
             if self.use_struct_weights:
                 self.node_struct_reshape = nn.Linear(num_letters, 1024)
                 self.edge_struct_reshape = nn.Linear(output_dim, 128)
@@ -1332,7 +1365,8 @@ class ProteinMPNN(nn.Module):
                         param = '.'.join(param.split('.')[:-1]) + '.linear.' + param.split('.')[-1]
                     if param in module_params:
                         state_dict[param] = val   
-                struct_module.load_state_dict(state_dict)
+                missing, unexpected = struct_module.load_state_dict(state_dict, strict=False)
+                print(f'Structure trunk backend {self.struct_trunk_backend}: loaded {len(state_dict)} params from ESMFold checkpoint; missing={len(missing)}, unexpected={len(unexpected)}')
             else:
                 print('Not using structure weights')
             
@@ -1342,7 +1376,14 @@ class ProteinMPNN(nn.Module):
             if (not name.startswith("struct_module.") and self.use_struct_weights) and p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, all_chain_lens=None, epoch=1, replicate=1):
+    def decoder_one_hot(self, logits, temperature=1.0, straight_through=True):
+        probs = F.softmax(logits / temperature, dim=-1)
+        if not straight_through:
+            return probs
+        hard = F.one_hot(torch.argmax(probs, dim=-1), num_classes=probs.shape[-1]).float()
+        return hard + (probs - probs.detach())
+
+    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, all_chain_lens=None, epoch=1, replicate=1, return_logits=False, struct_etab_seq_dense=None, struct_potts_alpha=None):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -1424,14 +1465,26 @@ class ProteinMPNN(nn.Module):
             if self.struct_predict_pairs:
                 struct_etab = etab.clone().view(b, n, k, h2, h2)
                 struct_etab = expand_etab(struct_etab, E_idx).reshape(b, n, n, h).squeeze(-1).to(torch.float32)
+                if struct_etab_seq_dense is not None and struct_potts_alpha is not None:
+                    struct_etab = (
+                        struct_potts_alpha * struct_etab
+                        + (1.0 - struct_potts_alpha) * struct_etab_seq_dense.to(struct_etab)
+                    )
             else:
                 struct_etab = torch.zeros((b, n, n, h, h)).to(torch.float32)
             if self.struct_predict_seq:
-                h_V_fold = logits
+                if self.struct_use_decoder_one_hot:
+                    h_V_fold = self.decoder_one_hot(
+                        logits,
+                        temperature=self.struct_one_hot_temperature,
+                        straight_through=self.struct_one_hot_straight_through,
+                    )
+                else:
+                    h_V_fold = logits
             else:
                 h_V_fold = torch.zeros_like(logits)
             if self.use_struct_weights:
-                h_V_fold = self.node_struct_reshape(logits)
+                h_V_fold = self.node_struct_reshape(h_V_fold)
                 struct_etab = self.edge_struct_reshape(struct_etab)
             h_V_fold = h_V_fold.to(torch.float32)
             structure = self.struct_module(h_V_fold, struct_etab, 7*torch.ones(mask.shape, dtype=torch.long, device=etab.device), residue_idx.to(torch.long), mask)
@@ -1443,6 +1496,8 @@ class ProteinMPNN(nn.Module):
             positions = None
 
 
+        if return_logits:
+            return log_probs, etab, E_idx, frames, positions, logits
         return log_probs, etab, E_idx, frames, positions
 
     def forward_recycle(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, all_chain_lens=None, epoch=1, replicate=1, num_recycles=3):
