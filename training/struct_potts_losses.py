@@ -16,15 +16,53 @@ def expand_etab_dense(etab_geom, e_idx):
     return etab_geom_dense.reshape(b, n, n, h)
 
 
-def potts_consistency_loss(etab_geom, e_idx, etab_seq_dense, mask, reduction="mean"):
+def gauge_project_potts_table(etab, aa_dim=20):
+    """Project Potts tables to zero-sum gauge over amino-acid axes."""
+    if etab.shape[-1] != aa_dim * aa_dim:
+        raise ValueError(
+            f"Expected last dim {aa_dim*aa_dim} for aa_dim={aa_dim}, got {etab.shape[-1]}"
+        )
+    couplings = etab.view(*etab.shape[:-1], aa_dim, aa_dim)
+    mean_a = couplings.mean(dim=-2, keepdim=True)
+    mean_b = couplings.mean(dim=-1, keepdim=True)
+    mean_ab = couplings.mean(dim=(-2, -1), keepdim=True)
+    couplings = couplings - mean_a - mean_b + mean_ab
+    return couplings.reshape(*etab.shape[:-1], aa_dim * aa_dim)
+
+
+def potts_consistency_loss(
+    etab_geom,
+    e_idx,
+    etab_seq_dense,
+    mask,
+    reduction="mean",
+    aa_dim=20,
+):
     """Match geometry-derived Potts to sequence-implied Potts."""
-    etab_geom_dense = expand_etab_dense(etab_geom, e_idx)
+    etab_geom_dense = gauge_project_potts_table(expand_etab_dense(etab_geom, e_idx), aa_dim=aa_dim)
+    etab_seq_dense = gauge_project_potts_table(etab_seq_dense, aa_dim=aa_dim)
     pair_mask = mask[:, :, None] * mask[:, None, :]
     diff = (etab_geom_dense - etab_seq_dense) * pair_mask[..., None]
     loss = diff.pow(2).sum(dim=-1)
     if reduction == "sum":
         return loss.sum()
     return loss.sum() / (pair_mask.sum() + 1e-6)
+
+
+def potts_norm_regularization(etab_dense, pair_mask):
+    """L2 regularization over pairwise Potts couplings."""
+    sq = etab_dense.pow(2).sum(dim=-1)
+    sq = sq * pair_mask
+    denom = pair_mask.sum() * etab_dense.shape[-1] + 1e-6
+    return sq.sum() / denom
+
+
+def potts_scale_regularization(etab_dense, pair_mask, target_rms=1.0):
+    """Penalize deviation of coupling RMS scale from a target value."""
+    sq = etab_dense.pow(2).sum(dim=-1) * pair_mask
+    denom = pair_mask.sum() * etab_dense.shape[-1] + 1e-6
+    rms = torch.sqrt(sq.sum() / denom + 1e-12)
+    return (rms - target_rms).pow(2)
 
 
 def msa_similarity_loss(log_probs, msa_tokens, msa_mask, seq_mask, margin=0.0):
